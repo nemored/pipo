@@ -40,6 +40,7 @@ const TRANSPORT_NAME: &'static str = "IRC";
 pub(crate) struct IRC {
     transport_id: usize,
     config: Config,
+    img_root: String,
     channels: HashMap<String,broadcast::Sender<Message>>,
     pool: Pool,
     pipo_id: Arc<Mutex<i64>>
@@ -52,6 +53,7 @@ impl IRC {
 		     nickname: String,
 		     server: String,
 		     use_tls: bool,
+		     img_root: &str,
 		     channel_mapping: &HashMap<String,String>,
 		     transport_id: usize)
 	-> anyhow::Result<IRC> {
@@ -89,6 +91,7 @@ impl IRC {
 	
 	Ok(IRC {
 	    config,
+	    img_root: img_root.to_string(),
 	    channels,
 	    transport_id,
 	    pool,
@@ -422,21 +425,20 @@ impl IRC {
 
     async fn get_avatar_url(&self, nickname: &str) -> String {
 	let client = reqwest::Client::new();
-	let img_root = "";
-	let url = format!("{}/{}.png", img_root, nickname);
+	let url = format!("{}/{}.png", self.img_root, nickname);
 
 	let response = match client.head(url).send().await {
 	    Ok(response) => response,
-	    Err(_) => return format!("{}/irc.png", img_root)
+	    Err(_) => return format!("{}/irc.png", self.img_root)
 	};
 
 	if let Some(etag) = response.headers().get(reqwest::header::ETAG) {
 	    if let Ok(etag) = etag.to_str() {
-		return format!("{}/{}.png?{}", img_root, nickname, etag)
+		return format!("{}/{}.png?{}", self.img_root, nickname, etag)
 	    }
 	}
 
-	return format!("{}/{}.png", img_root, nickname)
+	return format!("{}/{}.png", self.img_root, nickname)
     }
 
     async fn handle_priv_msg(&self,
