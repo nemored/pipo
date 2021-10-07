@@ -174,8 +174,7 @@ impl Shared {
 	    .map(|p| ChannelId::from(*p))
     }
 
-    fn set_webhook<C: AsRef<ChannelId>, W: AsRef<WebhookId>>(
-	&self, channel: C, webhook: W) {
+    fn set_webhook(&self, channel: &ChannelId, webhook: &WebhookId) {
 	let mut state = self.state.lock().unwrap();
 	state.channels.get_mut(channel.as_ref().as_u64())
 	    .map(|c| c.webhook = Some(*webhook.as_ref().as_u64()));
@@ -264,48 +263,42 @@ impl RealHandler {
 
     async fn guild_create(&mut self, ctx: Context, guild: Guild) {
 	let http = CacheHttp::http(&ctx);
-	let webhooks = match guild.webhooks(http).await {
-	    Ok(v) => v,
-	    Err(e) => {
-		eprintln!("Couldn't retrieve webhooks for guild: {}", e);
 
-		return
-	    }
-	};
+	// Setup Webhooks
+	for (id, _) in self.shared.get_channels() {
+	    let channel_id = ChannelId::from(id);
 
-	for webhook in webhooks {
-	    let channel_id = webhook.channel_id;
-	    if let None = self.shared.get_sender(channel_id) { continue }
-	    if let Some(_) = webhook.name {
-		if webhook.name == Some(format!("PIPO {}", channel_id)) {
-		    self.shared.set_webhook(channel_id, webhook.id);
+	    match channel_id.webhooks(http).await {
+		Ok(webhooks) => {
+		    let webhook = match webhooks.into_iter().find(|wh| {
+			wh.name == Some(format!("PIPO {}", channel_id))
+		    }) {
+			Some(webhook) => webhook,
+			None => match channel_id
+			    .create_webhook(http, format!("PIPO {}",
+							  channel_id)).await {
+				Ok(webhook) => webhook,
+				Err(e) => {
+				    eprintln!("Couldn't create Webhook: {}",
+					      e);
+
+				    continue
+				}
+			    }
+		    };
+
+		    self.shared.set_webhook(&channel_id, &webhook.id);
+		},
+		Err(e) => {
+		    eprintln!("Couldn't get Webhooks for channel {}: {}",
+			      channel_id, e);
+
+		    continue
 		}
 	    }
 	}
 
-	let channels: Vec<u64> = self.shared.get_channels().iter()
-	    .filter_map(|(id, channel)| {
-		match channel.webhook {
-		    Some(_) => None,
-		    None => Some(*id)
-		}
-	    }).collect();
-	
-	for id in channels.iter() {
-	    let channel_id = ChannelId::from(*id);
-	    match channel_id
-		.create_webhook(http, format!("PIPO {}", channel_id))
-	    	.await {
-	    	    Ok(wh) => self.shared.set_webhook(channel_id, wh.id),
-	    	    Err(e) => {
-	    		eprintln!("Error creating webhook: {}", e);
-			
-	    		continue
-	    	    }
-	    	}
-	}
-	
-	
+	// Setup threads
 	for thread in guild.threads {
 	    eprintln!("Thread: {}", thread);
 	    if let Some(channel_id) = thread.category_id {
