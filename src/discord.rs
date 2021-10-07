@@ -637,7 +637,7 @@ impl RealHandler {
 	}
     }
 
-    async fn thread_create(&mut self, ctx: Context, thread: GuildChannel) {
+    async fn thread_create(&mut self, _ctx: Context, thread: GuildChannel) {
 	if let Some(channel_id) = thread.category_id {
 	    // When a new thread is created, check to see if it is
 	    // a child of a channel PIPO is in before continuing.
@@ -1697,9 +1697,9 @@ impl Discord {
 			let ret = f.content(content.clone())
 			    .username(format!("{} ({})", username.clone(),
 					      transport.clone()));
-			// if let Some(url) = avatar_url {
-			//     ret.avatar_url(url);
-			// }
+			if let Some(url) = avatar_url {
+			    ret.avatar_url(url);
+			}
 
 			eprintln!("Message content: {:?}", ret);
 			
