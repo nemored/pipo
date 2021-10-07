@@ -40,6 +40,7 @@ enum ConfigTransport {
 	nickname: String,
 	server: String,
 	use_tls: bool,
+	img_root: String,
 	channel_mapping: HashMap<String,String>,
     },
     Discord {
@@ -348,6 +349,7 @@ async fn inner_main() -> anyhow::Result<()> {
 		nickname,
 		server,
 		use_tls,
+		img_root,
 		channel_mapping
 	    } => {
 		// tokio::spawn maybe?
@@ -357,6 +359,7 @@ async fn inner_main() -> anyhow::Result<()> {
 					    nickname.to_string(),
 					    server.to_string(),
 					    *use_tls,
+					    &img_root,
 					    channel_mapping,
 					    transport_id).await?;
 		// you should push enough state to connect the spawned

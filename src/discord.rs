@@ -541,7 +541,7 @@ impl EventHandler for Handler {
 	*self.pins.lock().unwrap() = new_pins;
     }
 
-    async fn guild_create(&self, ctx: Context, guild: Guild) {
+    async fn guild_create(&self, _ctx: Context, guild: Guild) {
 	for thread in guild.threads {
 	    eprintln!("Thread: {}", thread);
 	    if let Some(channel_id) = thread.category_id {
