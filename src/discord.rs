@@ -55,9 +55,7 @@ pub(crate) struct Discord {
     transport_id: usize,
     token: String,
     guild: GuildId,
-    channels: Arc<HashMap<u64,HandlerChannel>>,
-    emojis: Mutex<HashMap<String,Emoji>>,
-    threads: Arc<Mutex<HashMap<u64,u64>>>,
+    shared: Arc<Shared>,
     pool: Pool,
     pipo_id: Arc<Mutex<i64>>,
     cache_http: Option<Arc<dyn CacheHttp>>
@@ -69,16 +67,119 @@ struct Handler {
 
 struct RealHandler {
     transport_id: usize,
-    channels: Arc<HashMap<u64,HandlerChannel>>,
-    threads: Arc<Mutex<HashMap<u64,u64>>>,
-    pins: HashSet<MessageId>,
+    shared: Arc<Shared>,
     pool: Pool,
     pipo_id: Arc<Mutex<i64>>,
 }
 
+#[derive(Clone)]
 struct HandlerChannel {
     sender: broadcast::Sender<Message>,
     webhook: Option<u64>
+}
+
+struct Shared {
+    state: Mutex<State>
+}
+
+struct State {
+    channels: HashMap<u64,HandlerChannel>,
+    emojis: HashMap<String,Emoji>,
+    threads: HashMap<u64,u64>,
+    pins: HashSet<MessageId>
+}
+
+impl Shared {
+    fn contains_channel<C: AsRef<ChannelId>>(&self, channel: C) -> bool {
+	let state = self.state.lock().unwrap();
+	state.channels.contains_key(channel.as_ref().as_u64())
+    }
+    
+    fn get_channels(&self) -> HashMap<u64,HandlerChannel> {
+	let state = self.state.lock().unwrap();
+	state.channels.clone()
+    }
+
+    fn get_channel<C: AsRef<ChannelId>>(&self, channel: C)
+	-> Option<HandlerChannel> {
+	let state = self.state.lock().unwrap();
+	state.channels.get(channel.as_ref().as_u64()).map(|c| c.clone())
+    }
+
+    // fn insert_channel<C: AsRef<ChannelId>, W: AsRef<WebhookId>>(
+    // 	&self, channel: C, parent: C, webhook: Option<W>)
+    // 	-> Option<HandlerChannel> {
+    // 	let mut state = self.state.lock().unwrap();
+    // 	let sender = state.channels.get(parent.as_ref().as_u64()).unwrap()
+    // 		.sender.clone();
+    // 	state.channels.insert(*channel.as_ref().as_u64(), HandlerChannel {
+    // 	    sender,
+    // 	    webhook: webhook.map(|wh| *wh.as_ref().as_u64())
+    // 	})
+    // }
+    
+    fn get_webhook_id<C: AsRef<ChannelId>>(&self, channel: C)
+	-> Option<WebhookId> {
+	let state = self.state.lock().unwrap();
+	state.channels.get(channel.as_ref().as_u64())
+	    .and_then(|c| c.webhook.map(|wh| WebhookId::from(wh)))
+    }
+
+    fn get_emoji(&self, emoji: &str) -> Option<Emoji> {
+	let state = self.state.lock().unwrap();
+	state.emojis.get(emoji).map(|e| e.clone())
+    }
+
+    fn set_emojis(&self, emojis: HashMap<String,Emoji>) {
+	let mut state = self.state.lock().unwrap();
+	state.emojis = emojis;
+    }
+
+    fn contains_thread(&self, id: &u64) -> bool {
+	let state = self.state.lock().unwrap();
+	state.threads.contains_key(id)
+    }
+
+    fn format_threads(&self) -> String {
+	let state = self.state.lock().unwrap();
+	format!("{:?}", state.threads)
+    }
+
+    fn insert_thread<C: AsRef<ChannelId>>(&self, thread: C, channel: C) {
+	let mut state = self.state.lock().unwrap();
+	state.threads.insert(*thread.as_ref().as_u64(),
+			     *channel.as_ref().as_u64());
+    }
+    
+    fn get_pins(&self) -> HashSet<MessageId> {
+	let state = self.state.lock().unwrap();
+	state.pins.clone()
+    }
+
+    fn set_pins(&self, pins: HashSet<MessageId>) {
+	let mut state = self.state.lock().unwrap();
+	state.pins = pins;
+    }
+
+    fn get_sender<C: AsRef<ChannelId>>(&self, channel: C)
+	-> Option<broadcast::Sender<Message>> {
+	let state = self.state.lock().unwrap();
+	state.channels.get(channel.as_ref().as_u64()).map(|c| c.sender.clone())
+    }
+
+    fn get_thread<C: AsRef<ChannelId>>(&self, thread: C)
+	-> Option<ChannelId> {
+	let state = self.state.lock().unwrap();
+	state.threads.get(thread.as_ref().as_u64())
+	    .map(|p| ChannelId::from(*p))
+    }
+
+    fn set_webhook<C: AsRef<ChannelId>, W: AsRef<WebhookId>>(
+	&self, channel: C, webhook: W) {
+	let mut state = self.state.lock().unwrap();
+	state.channels.get_mut(channel.as_ref().as_u64())
+	    .map(|c| c.webhook = Some(*webhook.as_ref().as_u64()));
+    }
 }
 
 impl RealHandler {
@@ -108,7 +209,7 @@ impl RealHandler {
 	};
 	let new_pins: HashSet<MessageId> = pins.into_iter().map(|m| m.id)
 	    .collect();
-	let old_pins = self.pins.clone();
+	let old_pins = self.shared.get_pins();
 
 	for message in old_pins.difference(&new_pins) {
 	    let pipo_id = match self.select_id_from_messages(message).await {
@@ -158,7 +259,7 @@ impl RealHandler {
 	    }
 	}
 
-	self.pins = new_pins;
+	self.shared.set_pins(new_pins);
     }
 
     async fn guild_create(&mut self, ctx: Context, guild: Guild) {
@@ -174,31 +275,15 @@ impl RealHandler {
 
 	for webhook in webhooks {
 	    let channel_id = webhook.channel_id;
-	    if let None = self.channels.get(channel_id.as_u64()) { continue }
-	    if let Some(name) = webhook.name {
-		let channel_name = match channel_id.to_channel(http).await {
-		    Ok(c) => match c {
-			Channel::Guild(c) => {
-			    c.name
-			},
-			_ => continue
-		    },
-		    Err(e) => {
-			eprintln!("Couldn't get Channel from ChannelId: {}",
-				  e);
-
-			continue
-		    }
-		};
-
-		if name == format!("PIPO {}", channel_name) {
-		    self.channels.get_mut(channel_id.as_u64()).unwrap()
-			.webhook = None;
+	    if let None = self.shared.get_sender(channel_id) { continue }
+	    if let Some(_) = webhook.name {
+		if webhook.name == Some(format!("PIPO {}", channel_id)) {
+		    self.shared.set_webhook(channel_id, webhook.id);
 		}
 	    }
 	}
 
-	let channels: Vec<u64> = self.channels.iter()
+	let channels: Vec<u64> = self.shared.get_channels().iter()
 	    .filter_map(|(id, channel)| {
 		match channel.webhook {
 		    Some(_) => None,
@@ -207,52 +292,32 @@ impl RealHandler {
 	    }).collect();
 	
 	for id in channels.iter() {
-	    let channel_name = match ChannelId::from(*id).to_channel(http)
-		.await {
-		    Ok(c) => match c {
-			Channel::Guild(c) => {
-			    c.name
-			},
-			_ => continue
-		    },
-		    Err(e) => {
-			eprintln!("Couldn't get Channel from ChannelId: \
-				   {}", e);
+	    let channel_id = ChannelId::from(*id);
+	    match channel_id
+		.create_webhook(http, format!("PIPO {}", channel_id))
+	    	.await {
+	    	    Ok(wh) => self.shared.set_webhook(channel_id, wh.id),
+	    	    Err(e) => {
+	    		eprintln!("Error creating webhook: {}", e);
 			
-			continue
-		    }
-		};
-	    
-	    // match ChannelId::from(*id)
-	    // 	.create_webhook(http, format!("PIPO {}", channel_name))
-	    // 	.await {
-	    // 	    Ok(wh) => self.channels.lock().unwrap().get(id).unwrap()
-	    // 		.webhook = Some(*wh.id.as_u64()),
-	    // 	    Err(e) => {
-	    // 		eprintln!("Error creating webhook: {}", e);
-			
-	    // 		continue
-	    // 	    }
-	    // 	}
+	    		continue
+	    	    }
+	    	}
 	}
 	
 	
 	for thread in guild.threads {
 	    eprintln!("Thread: {}", thread);
 	    if let Some(channel_id) = thread.category_id {
-		let id = channel_id.as_u64();
 		// If this is a followed channel...
-		if let Some(_) = self.channels.get(id) {
+		if let Some(_) = self.shared.get_channel(channel_id) {
 		    // ...insert the thread into threads.
-		    let thread_id = *thread.id.as_u64();
-		    let channel_id = *id;
-		    
-		    self.threads.lock().unwrap().insert(thread_id, channel_id);
+		    self.shared.insert_thread(thread.id, channel_id);
 		}
 	    }
 	}
 	
-	eprintln!("Threads: {:?}", self.threads);
+	eprintln!("Threads: {}", self.shared.format_threads());
     }
 
     async fn message(&mut self, ctx: Context, msg: SerenityMessage) {
@@ -574,30 +639,15 @@ impl RealHandler {
 
     async fn thread_create(&mut self, ctx: Context, thread: GuildChannel) {
 	if let Some(channel_id) = thread.category_id {
-	    let http = CacheHttp::http(&ctx);
 	    // When a new thread is created, check to see if it is
 	    // a child of a channel PIPO is in before continuing.
-	    if !self.channels.contains_key(channel_id.as_u64()) { return }
+	    if !self.shared.contains_channel(channel_id) { return }
 
 	    eprintln!("New Thread: {:?}", thread);
 
-	    let webhook = thread.id.create_webhook(http, thread.name).await
-		.ok().map(|wh| *wh.id.as_u64());
-	    // let channels = self.channels.lock().unwrap();
-	    
-	    // channels.insert(*thread.id.as_u64(), HandlerChannel {
-	    // 	sender: channels.get(channel_id.as_u64()).unwrap().sender
-	    // 	    .clone(),
-	    // 	webhook
-	    // });
-						     
 	    // Finally, add the ID's of the thread and its parent to
 	    // the thread map and create a new webhook for the thread.
-	    let mut threads = self.threads.lock().unwrap();
-	    let thread_id = *thread.id.as_u64();
-	    let channel_id = *channel_id.as_u64();
-	    
-	    threads.insert(thread_id, channel_id);
+	    self.shared.insert_thread(thread.id, channel_id);
 	}
     }
 
@@ -766,15 +816,11 @@ impl RealHandler {
 		    for thread in guild.threads {
 			eprintln!("Thread: {}", thread);
 			if let Some(channel_id) = thread.category_id {
-			    let id = channel_id.as_u64();
 			    // If this is a followed channel...
-			    if let Some(_) = self.channels.get(id) {
+			    if self.shared.contains_channel(channel_id) {
 				// ...insert the thread into threads.
-				let mut threads = self.threads.lock().unwrap();
-				let thread_id = *thread.id.as_u64();
-				let channel_id = *id;
-				
-				threads.insert(thread_id, channel_id);
+				self.shared.insert_thread(thread.id,
+							   channel_id);
 			    }
 			}
 		    }
@@ -782,7 +828,7 @@ impl RealHandler {
 		_ => ()
 	    }
 	}
-	eprintln!("Threads: {:?}", self.threads.lock().unwrap())
+	eprintln!("Threads: {:?}", self.shared.format_threads())
     }
 
 }
@@ -827,19 +873,16 @@ impl RealHandler {
 				   thread: &mut Option<(Option<String>,
 							Option<u64>)>)
 	-> Option<broadcast::Sender<Message>> {
-	match self.channels.get(channel_id.as_u64()) {
-	    Some(channel) => Some(channel.sender.clone()),
-	    None => {
-		if let Some(parent_id) = self.threads.lock().unwrap()
-		    .get(channel_id.as_u64()) {
-			*thread = Some((None, Some(*channel_id.as_u64())));
+	if let Some(sender) = self.shared.get_sender(channel_id) {
+	    return Some(sender)
+	}
+	else if let Some(parent) = self.shared.get_thread(channel_id) {
+	    *thread = Some((None, Some(*channel_id.as_u64())));
 
-			return Some(self.channels.get(parent_id).unwrap()
-				    .sender.clone())
-		}
-
-		return None
-	    }
+	    return self.shared.get_sender(parent)
+	}
+	else {
+	    return None
 	}
     }
 
@@ -1271,7 +1314,7 @@ impl Discord {
 		     guild_id: u64,
 		     channel_mapping: &HashMap<String,String>)
 	-> anyhow::Result<Discord> {
-	let channels = Arc::new(channel_mapping.iter()
+	let channels = channel_mapping.iter()
 	    .filter_map(|(channelname, busname)| {
 		if let Some(sender) = bus_map.get(busname) {
 		    Some((channelname.parse::<u64>().unwrap(),
@@ -1286,21 +1329,40 @@ impl Discord {
 		    None
 		}
 	    }
-	    ).collect());
+	    ).collect();
 
+	let shared = Arc::new(Shared {
+	    state: Mutex::new(State {
+		channels,
+		emojis: HashMap::new(),
+		threads: HashMap::new(),
+		pins: HashSet::new()
+	    })
+	});
+		
 	Ok(Discord {
 	    transport_id,
 	    token,
 	    guild: GuildId::from(guild_id),
-	    channels,
-	    emojis: Mutex::new(HashMap::new()),
-	    threads: Arc::new(Mutex::new(HashMap::new())),
+	    shared,
 	    pipo_id,
 	    pool,
 	    cache_http: None
 	})
     }
 
+    fn create_input_buses(&self) -> StreamMap<u64,BroadcastStream<Message>> {
+	let state = self.shared.state.lock().unwrap();
+	let mut input_buses = StreamMap::new();
+
+	for (id, channel) in state.channels.iter() {
+	    input_buses.insert(*id, BroadcastStream::new(channel.sender
+							 .subscribe()));
+	}
+
+	input_buses
+    }
+    
     async fn update_messages_table<T: AsRef<MessageId>>(&self, pipo_id: i64,
 							message_id: T)
 	-> anyhow::Result<()> {
@@ -1368,7 +1430,7 @@ impl Discord {
 		// create a
 		// new Discord thread from the `MessageId`.
 		eprintln!("found disid: {}", id);
-		if self.threads.lock().unwrap().contains_key(&id) {
+		if self.shared.contains_thread(&id) {
 		    return Ok(ChannelId::from(id))
 		}
 		
@@ -1411,37 +1473,21 @@ impl Discord {
 					http: H,
 					emoji: &str)
 	-> anyhow::Result<Option<Emoji>> {
-	{
-	    let emojis = match self.emojis.lock() {
-		Ok(mg) => mg,
-		Err(e) => return Err(anyhow!("Couldn't acquire lock on Mutex: \
-					      {}", e))
-	    };
-
-	    if let Some(emoji) = emojis.get(emoji) {
-		return Ok(Some(emoji.clone()))
-	    }
+	if let Some(emoji) = self.shared.get_emoji(emoji) {
+	    return Ok(Some(emoji))
 	}
 
-	{
-	    let new_emojis = self.guild.emojis(http).await?;
+	let new_emojis = self.guild.emojis(http).await?;
 
-	    let mut emojis = match self.emojis.lock() {
-		Ok(mg) => mg,
-		Err(e) => return Err(anyhow!("Couldn't acquire lock on Mutex: \
-					      {}", e))
-	    };
+	self.shared.set_emojis(new_emojis.into_iter().map(|e| {
+	    (e.name.clone(), e)
+	}).collect());
 
-	    *emojis = new_emojis.into_iter().map(|e| {
-		(e.name.clone(), e)
-	    }).collect();
-
-	    if let Some(emoji) = emojis.get(emoji) {
-		return Ok(Some(emoji.clone()))
-	    }
-	    else {
-		return Ok(None)
-	    }
+	if let Some(emoji) = self.shared.get_emoji(emoji) {
+	    return Ok(Some(emoji))
+	}
+	else {
+	    return Ok(None)
 	}
     }
 
@@ -1492,8 +1538,7 @@ impl Discord {
 	    Some(id) => {
 		let msg_id = MessageId::from(id);
 		
-		let id = self.channels.get(channel.as_u64())
-		    .and_then(|c| c.webhook);
+		let id = self.shared.get_webhook_id(channel);
 		
 		if let Some(id) = id {
 		    if let Ok(wh) = WebhookId::from(id).to_webhook(http)
@@ -1617,8 +1662,7 @@ impl Discord {
 					   pipo_id))
 	    };
 		    
-	    let id = self.channels.get(channel.as_u64())
-		    .and_then(|c| c.webhook);
+	    let id = self.shared.get_webhook_id(channel);
 		
 	    if let Some(id) = id {
 		if let Ok(wh) = WebhookId::from(id).to_webhook(http).await {
@@ -1642,21 +1686,26 @@ impl Discord {
 	    Ok(())
 	}
 	else {
-	    let id = self.channels.get(channel.as_u64())
-		    .and_then(|c| c.webhook);
+	    let id = self.shared.get_webhook_id(channel);
 		
+	    eprintln!("Webhook ID: {:?}", id);
+	    
 	    if let Some(id) = id {
-		if let Ok(wh) = WebhookId::from(id).to_webhook(http).await {
+		if let Ok(wh) = id.to_webhook(http).await {
+		    eprintln!("Webhook: {:?}", wh);
 		    if let Ok(msg) = wh.execute(http, true, |f| {
 			let ret = f.content(content.clone())
 			    .username(format!("{} ({})", username.clone(),
 					      transport.clone()));
-			if let Some(url) = avatar_url {
-			    ret.avatar_url(url);
-			}
+			// if let Some(url) = avatar_url {
+			//     ret.avatar_url(url);
+			// }
+
+			eprintln!("Message content: {:?}", ret);
 			
 			ret
 		    }).await {
+			eprintln!("Message: {:?}", msg);
 			return self.update_messages_table(pipo_id,
 							  msg.unwrap()).await
 		    }
@@ -1675,18 +1724,10 @@ impl Discord {
     }
     
     pub async fn connect(&mut self) -> anyhow::Result<()> {
-	let mut input_buses = StreamMap::new();
-
-	for (id, channel) in self.channels.iter() {
-	    input_buses.insert(*id, BroadcastStream::new(channel.sender
-							 .subscribe()));
-	}
-
+	let mut input_buses = self.create_input_buses();
 	let handler = Handler { real_handler: AsyncMutex::new(RealHandler {
 	    transport_id: self.transport_id,
-	    channels: self.channels.clone(),
-	    threads: self.threads.clone(),
-	    pins: HashSet::new(),
+	    shared: self.shared.clone(),
 	    pool: self.pool.clone(),
 	    pipo_id: self.pipo_id.clone(),
 	})};
