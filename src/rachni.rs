@@ -59,6 +59,17 @@ impl Rachni {
 	let http = HttpClient::new();
 	let url = format!("http://{}/api/{}/stream/ping", self.server,
 			  self.api_key);
+	let response = http.request(Method::GET, &url).send().await?;
+
+	if let Some(map) = serde_json::from_str::<Value>(response.text().await?
+							 .as_str())?
+	    .as_object() {
+		for (stream, _) in map {
+		    streams.insert(stream.as_str().to_string());
+		}
+	    }
+	
+	time::sleep(Duration::from_secs(self.interval)).await;
 
 	loop {
 	    let mut new_stream_map = HashSet::new();
@@ -120,12 +131,15 @@ impl Rachni {
     async fn send_message(&self, username: &str, message: &str)
 	-> anyhow::Result<()> {
 	let pipo_id = self.insert_into_messages_table().await?;
+	let avatar_url
+	    = Some(format!("http://{}/profiles/default/profile_default.png",
+		      self.server));
 	let message = Message::Action {
 	    sender: self.transport_id,
 	    pipo_id,
 	    transport: TRANSPORT_NAME.to_string(),
 	    username: username.to_string(),
-	    avatar_url: None,
+	    avatar_url,
 	    thread: None,
 	    message: Some(message.to_string()),
 	    attachments: None,
