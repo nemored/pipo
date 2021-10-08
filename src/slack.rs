@@ -452,8 +452,6 @@ impl Slack {
 	    None => return Err(anyhow!("No slack_id for given pipo_id"))
 	};
 
-	eprintln!("Emoji: {}", emoji);
-
 	let mut shortcode = None;
 	if let Some(emoji) = emojis::lookup(&emoji) {
 	    if let Some(s) = emoji.shortcode() {
@@ -465,8 +463,6 @@ impl Slack {
 	    Some(s) => s,
 	    None => emoji
 	};
-
-	eprintln!("Shortcode: {}", emoji);
 
 	let body = serde_json::json!({
 	    "channel":channel,
@@ -511,8 +507,6 @@ impl Slack {
 	let body = serde_json::json!({
 	    "channel":channel,
 	    "ts":ts}).to_string();
-
-	eprintln!("body: {:?}", body);
 
 	headers.insert(header::CONTENT_TYPE,
 		       "application/json".parse()?);
@@ -735,8 +729,6 @@ impl Slack {
 		"blocks":blocks,
 	    }).to_string();
 
-	    eprintln!("JSON payload: {:?}", body);
-
 	    headers.insert(header::CONTENT_TYPE, "application/json".parse()?);
 	    headers.insert(header::AUTHORIZATION,
 			   format!("Bearer {}", self.bot_token).parse()?);
@@ -761,10 +753,8 @@ impl Slack {
 	-> anyhow::Result<()>{
 	let thread_ts = match thread {
 	    Some((_, d)) => {
-		eprintln!("This is a message from a thread");
 		match d {
 		    Some(d) => {
-			eprintln!("The discord thread id is: {}", d);
 			self.get_slackid_from_discordid(d).await?
 		    },
 		    None => None
@@ -822,8 +812,6 @@ impl Slack {
 		"attachments":attachments}).to_string()
 	};
 
-	eprintln!("body: {:?}", body);
-	
 	headers.insert(header::CONTENT_TYPE,
 		       "application/json".parse()?);
 	headers.insert(header::AUTHORIZATION,
@@ -968,8 +956,6 @@ impl Slack {
 		else { first_run = false }
 		if username.len() > 0 {
 		    for (usern, user) in self.users.iter() {
-			eprintln!("username: {}, usern: {}", username,
-				  usern);
 			if username == usern.as_str() {
 			    if let Some(id) = &user.id {
 				return format!("<@{}>{}", id, remainder)
@@ -1076,8 +1062,6 @@ impl Slack {
 							     .await?
 							     .as_str())?;
 
-	    eprintln!("users_list: {:?}", users_list);
-
 	    if let Some(members) = users_list.members {
 		for user in members {
 		    if let Some(ref name) = user.name {
@@ -1100,8 +1084,6 @@ impl Slack {
 		None => false
 	    }
 	}
-
-	eprintln!("Users: {:?}", self.users);
 
 	Ok(())
     }
@@ -1246,7 +1228,9 @@ impl Slack {
 		    None => return Err(anyhow!("Message does not contain a \
 						channel."))
 		};
-		let nickname = &self.get_user_display_name(user).await?;
+		let user = self.get_user_info(&user.ok_or_else(|| {
+		    anyhow!("No user ID in message.")
+		})?).await?;
 		
 		let rich_text = if let Some(blocks) = blocks {
 		    let mut rich_text = String::new();
@@ -1290,13 +1274,13 @@ impl Slack {
 							   is_edit).await,
 			"file_share" =>
 			    return self.handle_file_share(ts, thread_ts,
-							  &channel, nickname,
+							  &channel, user,
 							  rich_text, files,
 							  attachments,
 							  is_edit).await,
 			"me_message" =>
 			    return self.handle_me_message(ts, &channel,
-							  nickname, rich_text,
+							  user, rich_text,
 							  is_edit,
 							  irc_flag).await,
 			"message_changed" =>
@@ -1309,13 +1293,13 @@ impl Slack {
 			    return self.handle_message_deleted(deleted_ts,
 							       &channel).await,
 			_ => return self.handle_message(ts, thread_ts,
-							&channel, nickname,
+							&channel, user,
 							rich_text, attachments,
 							is_edit,
 							irc_flag).await,
 		    }
 		    None => return self.handle_message(ts, thread_ts, &channel,
-						       nickname, rich_text,
+						       user, rich_text,
 						       attachments,
 						       is_edit, irc_flag).await
 		}
@@ -1328,7 +1312,6 @@ impl Slack {
 		event_ts: _,
 		user: _,
 	    } => {
-		eprintln!("Slack: Adding pin...");
 		return self.handle_pin(item, false).await
 	    },
 	    Event::PinRemoved {
@@ -1340,7 +1323,6 @@ impl Slack {
 		event_ts: _,
 		user: _,
 	    } => {
-		eprintln!("Slack: Removing pin...");
 		return self.handle_pin(item, true).await
 	    },
 	    Event::ReactionAdded {
@@ -1402,7 +1384,7 @@ impl Slack {
 
     async fn handle_file_share(&mut self, ts: Option<String>,
 			       thread_ts: Option<String>, channel: &str,
-			       username: &str, message: Option<String>,
+			       user: User, message: Option<String>,
 			       files: Option<Vec<File>>,
 			       attachments: Option<Vec<Attachment>>,
 			       is_edit: bool)
@@ -1431,12 +1413,36 @@ impl Slack {
 	    });
 	}
 	
-	self.handle_message(ts, thread_ts, channel, username, message,
+	self.handle_message(ts, thread_ts, channel, user, message,
 			    attachments, is_edit, false).await
     }
 
+    fn get_username(user: &User) -> anyhow::Result<String> {
+	Ok(user.profile.as_ref()
+	   .and_then(|p| p.display_name.as_ref().filter(|s| !s.is_empty()))
+	   .or_else(|| user.name.as_ref().filter(|s| !s.is_empty()))
+	   .or_else(|| user.real_name.as_ref().filter(|s| !s.is_empty()))
+	   .ok_or_else(|| {
+	       anyhow!("Couldn't get a name for user.")
+	   })?.to_string())
+    }
+
+    fn get_avatar_url_for_user(user: &User) -> anyhow::Result<Option<String>> {
+	Ok(user.profile.as_ref().and_then(|p| {
+	    if let Some(url) = &p.image_original { Some(url) }
+	    else if let Some(url) = &p.image_1024 { Some(url) }
+	    else if let Some(url) = &p.image_512 { Some(url) }
+	    else if let Some(url) = &p.image_192 { Some(url) }
+	    else if let Some(url) = &p.image_72 { Some(url) }
+	    else if let Some(url) = &p.image_48 { Some(url) }
+	    else if let Some(url) = &p.image_32 { Some(url) }
+	    else if let Some(url) = &p.image_24 { Some(url) }
+	    else { None }
+	}).cloned())
+    }
+
     async fn handle_me_message(&mut self, ts: Option<String>, channel: &str,
-			       username: &str, message: Option<String>,
+			       user: User, message: Option<String>,
 			       is_edit: bool, irc_flag: bool)
 	-> anyhow::Result<()> {
 	let pipo_id = match ts {
@@ -1446,13 +1452,14 @@ impl Slack {
 	    },
 	    None => return Err(anyhow!("Message has no timestamp."))
 	};
-	
+	let username = Slack::get_username(&user)?;
+	let avatar_url = Slack::get_avatar_url_for_user(&user)?;
 	let message = Message::Action {
 	    sender: self.transport_id,
 	    pipo_id,
 	    transport: TRANSPORT_NAME.to_string(),
-	    username: username.to_string(),
-	    avatar_url: None,
+	    username,
+	    avatar_url,
 	    thread: None,
 	    message: message,
 	    attachments: None,
@@ -1558,8 +1565,6 @@ impl Slack {
 	let pipo_id = *self.pipo_id.lock().unwrap();
 	let ts = String::from(ts);
 
-	eprintln!("Inserting ts {} into table at id {}", ts, pipo_id);
-	
 	conn.interact(move |conn| -> anyhow::Result<usize> {
 		Ok(conn.execute("INSERT OR REPLACE INTO messages (id, slackid) 
                                  VALUES (?1, ?2)",
@@ -1577,8 +1582,6 @@ impl Slack {
     async fn update_messages(&self, pipo_id: i64, ts: String)
 	-> anyhow::Result<()> {
 	let conn = self.pool.get().await.unwrap();
-
-	eprintln!("Updating ts at id {} to {}", pipo_id, ts);
 
 	conn.interact(move |conn| -> anyhow::Result<usize> {
 		Ok(conn.execute("UPDATE messages SET slackid = ?2 
@@ -1634,8 +1637,6 @@ impl Slack {
 	    }
 	};
 
-	eprintln!("Found id {:?} at ts {}", ret, old_ts);
-
 	ret
     }
 
@@ -1647,8 +1648,6 @@ impl Slack {
 	    Ok(conn.query_row("SELECT slackid FROM messages WHERE id = ?1",
 			    params![pipo_id], |row| row.get(0))?)
 	}).await?;
-
-	eprintln!("Found ts {:?} at id {}", ret, pipo_id);
 
 	Ok(ret)
     }
@@ -1663,15 +1662,12 @@ impl Slack {
 			      params![discord_id], |row| row.get(0))?)
 	}).await?;
 
-	eprintln!("Found ts {:?} for discord_id {}", ret, discord_id);
-
 	Ok(ret)
     }
 
     async fn select_discordid_from_messages(&self, slack_id: String)
 	-> anyhow::Result<Option<u64>> {
 	let conn = self.pool.get().await.unwrap();
-	let old_slack_id = slack_id.clone();
 	
 	let ret = conn.interact(move |conn| -> anyhow::Result<Option<u64>> {
 	    Ok(conn.query_row("SELECT discordid FROM messages 
@@ -1679,14 +1675,12 @@ impl Slack {
 			      params![slack_id], |row| row.get(0))?)
 	}).await?;
 
-	eprintln!("Found ts {:?} for slack_id {}", ret, old_slack_id);
-
 	Ok(ret)
     }
 
     async fn handle_message(&mut self, ts: Option<String>,
 			    thread_ts: Option<String>, channel: &str,
-			    username: &str, message: Option<String>,
+			    user: User, message: Option<String>,
 			    attachments: Option<Vec<Attachment>>,
 			    is_edit: bool, irc_flag: bool)
 	-> anyhow::Result<()> {
@@ -1703,6 +1697,8 @@ impl Slack {
 	    },
 	    None => return Err(anyhow!("Message has no timestamp."))
 	};
+	let username = Slack::get_username(&user)?;
+	let avatar_url = Slack::get_avatar_url_for_user(&user)?;
 	let attachments = match attachments {
 	    Some(attachments)
 		=> Some(self.handle_attachments(attachments).await),
@@ -1714,8 +1710,8 @@ impl Slack {
 		pipo_id,
 		sender: self.transport_id,
 		transport: TRANSPORT_NAME.to_string(),
-		username: username.to_string(),
-		avatar_url: None,
+		username,
+		avatar_url,
 		thread,
 		message: message,
 		attachments,
@@ -1912,8 +1908,6 @@ impl Slack {
 		},
 		None => None
 	    };
-
-	    eprintln!("Timestamp: {:?}", ts);
 
 	    // Only fields we get from this are:
 	    // (*) client_msg_id
@@ -2242,16 +2236,11 @@ impl Slack {
 	    .text("latest", ts.0.clone())
 	    .text("limit", "1");
 
-	eprintln!("form: {:?}", _form);
-
 	headers.insert(header::CONTENT_TYPE,
 		       "application/x-www-form-urlencoded".parse()?);
 	headers.insert(header::AUTHORIZATION,
 		       format!("Bearer {}", self.bot_token).parse()?);
 
-	eprintln!("headers: {:?}", headers);
-
-	
 	let response = self.http
 	    .request(Method::GET,
 		     "https://slack.com/api/conversations.history")
@@ -2262,8 +2251,6 @@ impl Slack {
 		     ("limit", String::from("1"))])
 	    .send().await?;
 
-	eprintln!("Response: {:#?}", response);
-	
 	let json: Value = serde_json::from_str(response.text().await?
 					       .as_str())?;
 	
@@ -2271,15 +2258,10 @@ impl Slack {
 	    return Err(anyhow!("get_message() {:?}", json))
 	}
 
-	eprintln!("JSON: {:?}", json);
-
 	if let Some(messages) = json["messages"].as_array() {
 	    let message: SlackMessage = serde_json::from_value(messages[0]
 							       .clone())?;
 
-	    eprintln!("SlackMessage: {:?}", message);
-	    eprintln!("Timestamp: {:?}", ts);
-	    
 	    return Ok(message)
 	}
 
@@ -2302,8 +2284,6 @@ impl Slack {
 	    .query(&[("user", user.to_string())])
 	    .send().await?;
 
-	eprintln!("Response: {:#?}", response);
-
 	let json: Value = serde_json::from_str(response.text().await?
 					       .as_str())?;
 	
@@ -2311,11 +2291,7 @@ impl Slack {
 	    return Err(anyhow!("get_message() {:?}", json))
 	}
 
-	eprintln!("JSON: {:#?}", json);
-
 	let user: User = serde_json::from_value(json["user"].clone())?;
-
-	eprintln!("User: {:#?}", user);
 
 	return Ok(user)
     }
