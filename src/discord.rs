@@ -1486,40 +1486,87 @@ impl Discord {
 
     async fn handle_action_message(&self, channel: ChannelId, pipo_id: i64,
 				   transport: String, username: String,
+				   avatar_url: Option<String>,
 				   message: Option<String>, is_edit: bool)
 	-> anyhow::Result<()> {
+	if message.is_none() {
+	    return Err(anyhow!("Message has no contents."))
+	}
+	
 	let mut content = MessageBuilder::new();
 	let http = self.cache_http.as_ref().unwrap().http();
+	let message = message.unwrap();
 	
-    	if let Some(message) = message {
-	    content
-		.push_bold(username)
+	content.push_italic(message);
+
+	if is_edit {
+	    let message_id = self.select_discordid_from_messages(pipo_id)
+		.await?;
+	    let msgid = match message_id {
+		Some(id) => MessageId::from(id),
+		None => return Err(anyhow!("Could find discordid for id: {}",
+					   pipo_id))
+	    };
+	    
+	    let id = self.shared.get_webhook_id(channel);
+	    
+	    if let Some(id) = id {
+		if let Ok(wh) = WebhookId::from(id).to_webhook(http).await {
+		    if let Ok(msg) = wh.edit_message(http, msgid, |f| {
+			f.content(content.clone())
+		    }).await {
+			return self.update_messages_table(pipo_id, msg).await
+		    }
+		}
+	    }
+
+	    let mut msg = MessageBuilder::new();
+	    
+	    msg.push_bold(username)
 		.push_line(format!(" [{}]", transport))
-		.push_italic(message)
-		.build();
+		.push(content);
 
-	    if is_edit {
-		let message_id = self.select_discordid_from_messages(pipo_id)
-		    .await?;
-		let message_id = match message_id {
-		    Some(id) => id,
-		    None => return Err(anyhow!("Could find discordid for \
-						id: {}", pipo_id))
-		};
-		
-		channel.edit_message(http,
-				     message_id,
-				     |m| m.content(content)).await?;
+	    channel.edit_message(http, msgid, |m| m.content(msg))
+		.await?;
 
-		Ok(())
-	    }
-	    else {
-	    self.update_messages_table(pipo_id,
-				       channel.say(http, content).await?)
-		    .await
-	    }
+	    Ok(())
 	}
-	else { Err(anyhow!("Message is empty")) }
+	else {
+	    let id = self.shared.get_webhook_id(channel);
+	    
+	    eprintln!("Webhook ID: {:?}", id);
+	    
+	    if let Some(id) = id {
+		if let Ok(wh) = id.to_webhook(http).await {
+		    eprintln!("Webhook: {:?}", wh);
+		    if let Ok(msg) = wh.execute(http, true, |f| {
+			let ret = f.content(content.clone())
+			    .username(format!("{} ({})", username.clone(),
+					      transport.clone()));
+			if let Some(url) = avatar_url {
+			    ret.avatar_url(url);
+			}
+
+			eprintln!("Message content: {:?}", ret);
+			
+			ret
+		    }).await {
+			eprintln!("Message: {:?}", msg);
+			return self.update_messages_table(pipo_id,
+							  msg.unwrap()).await
+		    }
+		}
+	    }
+
+	    let mut msg = MessageBuilder::new();
+	    
+	    msg.push_bold(username)
+		.push_line(format!(" [{}]", transport))
+		.push(content);
+
+	    self.update_messages_table(pipo_id, channel.say(http, msg)
+				       .await?).await
+	}
     }
 
     async fn handle_delete_message(&self, channel: ChannelId, pipo_id: i64)
@@ -1608,8 +1655,7 @@ impl Discord {
 	};
 
 	if let Some(ref message) = message {
-	    content
-		.push_line(message);
+	    content.push(message);
 	}
 
 	if let Some(attachments) = attachments {
@@ -1671,7 +1717,7 @@ impl Discord {
 	    
 	    msg.push_bold(username)
 		.push_line(format!(" [{}]", transport))
-		.push_line(content);
+		.push(content);
 
 	    channel.edit_message(http, msgid, |m| m.content(msg))
 		.await?;
@@ -1709,7 +1755,7 @@ impl Discord {
 	    
 	    msg.push_bold(username)
 		.push_line(format!(" [{}]", transport))
-		.push_line(content);
+		.push(content);
 
 	    self.update_messages_table(pipo_id, channel.say(http, msg)
 				       .await?).await
@@ -1752,7 +1798,7 @@ impl Discord {
 				    pipo_id,
 				    transport,
 				    username,
-				    avatar_url: _,
+				    avatar_url,
 				    thread: _,
 				    message,
 				    attachments: _,
@@ -1765,6 +1811,7 @@ impl Discord {
 								   pipo_id,
 								   transport,
 								   username,
+								   avatar_url,
 								   message,
 								   is_edit)
 					.await {
