@@ -453,6 +453,8 @@ impl IRC {
 	    let pipo_id = self.insert_into_messages_table().await?;
 
 	    let avatar_url = self.get_avatar_url(&nickname).await;
+
+	    eprintln!("IRC PIPO ID: {}", pipo_id);
 	    
 	    if let Some(message) = RE.captures(&message) {
 		let message = message.get(1).unwrap().as_str();
@@ -506,11 +508,12 @@ impl IRC {
                                  VALUES (?1)", params![pipo_id])?)
 	}).await?;
 
+	let ret = pipo_id;
 	let mut pipo_id = self.pipo_id.lock().unwrap();
 	*pipo_id += 1;
 	if *pipo_id > 40000 { *pipo_id = 0 }
 
-	Ok(*pipo_id)
+	Ok(ret)
     }
 
     async fn handle_notice(&self,
