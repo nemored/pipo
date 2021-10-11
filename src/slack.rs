@@ -1228,9 +1228,6 @@ impl Slack {
 		    None => return Err(anyhow!("Message does not contain a \
 						channel."))
 		};
-		let user = self.get_user_info(&user.ok_or_else(|| {
-		    anyhow!("No user ID in message.")
-		})?).await?;
 		
 		let rich_text = if let Some(blocks) = blocks {
 		    let mut rich_text = String::new();
@@ -1384,7 +1381,7 @@ impl Slack {
 
     async fn handle_file_share(&mut self, ts: Option<String>,
 			       thread_ts: Option<String>, channel: &str,
-			       user: User, message: Option<String>,
+			       user: Option<String>, message: Option<String>,
 			       files: Option<Vec<File>>,
 			       attachments: Option<Vec<Attachment>>,
 			       is_edit: bool)
@@ -1442,7 +1439,7 @@ impl Slack {
     }
 
     async fn handle_me_message(&mut self, ts: Option<String>, channel: &str,
-			       user: User, message: Option<String>,
+			       user: Option<String>, message: Option<String>,
 			       is_edit: bool, irc_flag: bool)
 	-> anyhow::Result<()> {
 	let pipo_id = match ts {
@@ -1452,6 +1449,9 @@ impl Slack {
 	    },
 	    None => return Err(anyhow!("Message has no timestamp."))
 	};
+	let user = self.get_user_info(&user.ok_or_else(|| {
+	    anyhow!("No user ID in message.")
+	})?).await?;
 	let username = Slack::get_username(&user)?;
 	let avatar_url = Slack::get_avatar_url_for_user(&user)?;
 	let message = Message::Action {
@@ -1680,7 +1680,7 @@ impl Slack {
 
     async fn handle_message(&mut self, ts: Option<String>,
 			    thread_ts: Option<String>, channel: &str,
-			    user: User, message: Option<String>,
+			    user: Option<String>, message: Option<String>,
 			    attachments: Option<Vec<Attachment>>,
 			    is_edit: bool, irc_flag: bool)
 	-> anyhow::Result<()> {
@@ -1697,6 +1697,9 @@ impl Slack {
 	    },
 	    None => return Err(anyhow!("Message has no timestamp."))
 	};
+	let user = self.get_user_info(&user.ok_or_else(|| {
+	    anyhow!("No user ID in message.")
+	})?).await?;
 	let username = Slack::get_username(&user)?;
 	let avatar_url = Slack::get_avatar_url_for_user(&user)?;
 	let attachments = match attachments {

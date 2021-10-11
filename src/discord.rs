@@ -381,12 +381,13 @@ impl RealHandler {
 	    let id = 0;
 
 	    if let Some(reply) = msg.referenced_message {
+		eprintln!("Reply: {}", reply.id);
 		let mut fallback = None;
 		let pipo_id = match self
 		    .select_id_from_messages(reply.as_ref()).await {
 			Ok(id) => id,
 			Err(e) => {
-			    eprintln!("Failed to add message to \
+			    eprintln!("Failed to get id for message from \
 				       database: {}", e);
 
 			    return
@@ -1361,6 +1362,8 @@ impl Discord {
 	-> anyhow::Result<()> {
 	let conn = self.pool.get().await.unwrap();
 	let message_id = *message_id.as_ref().as_u64();
+
+	eprintln!("Adding {} ID: {}", message_id, pipo_id);
 
 	conn.interact(move |conn| -> anyhow::Result<usize> {
 		Ok(conn.execute("UPDATE messages SET discordid = ?2
