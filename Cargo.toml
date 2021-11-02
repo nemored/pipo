@@ -12,14 +12,18 @@ chrono = "0.4"
 deadpool-sqlite = "0.1"
 emojis = "0.1"
 futures = "0.3"
+hmac = "0.11"
 irc = "0.15"
 lazy_static = "1.4"
+nix = "0.23"
+outer_cgi = "0.2"
 regex = "1.5"
 reqwest = "0.11"
 rusqlite = "0.25"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serenity = { version = "0.10", default_features = false, features = ["client", "gateway", "native_tls_backend", "model"] }
+sha2 = "0.9"
 tokio = { version = "1.10", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-tungstenite = { version = "0.15", features = ["native-tls"] }
