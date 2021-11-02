@@ -13,7 +13,7 @@ use serde::{
 
 #[derive(Deserialize, Debug)]
 #[serde(tag="type", rename_all="snake_case")]
-pub(crate) enum Response {
+pub enum Response {
     Disconnect {
 	reason: String,
 	debug_info: DebugInfo,
@@ -41,20 +41,20 @@ pub(crate) enum Response {
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct ConnectionInfo {
+pub struct ConnectionInfo {
     app_id: String,
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct DebugInfo {
+pub struct DebugInfo {
     host: String,
     build_number: Option<u64>,
     approximate_connection_time: Option<u64>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Serialize)]
 #[serde(tag="type", rename_all="snake_case")]
-pub(crate) enum EventPayload {
+pub enum EventPayload {
     EventCallback {
 	token: String,
 	team_id: String,
@@ -65,11 +65,15 @@ pub(crate) enum EventPayload {
 	authorizations: Vec<Authorization>,
 	is_ext_shared_channel: bool,
 	event_context: String,
+    },
+    UrlVerification {
+	token: String,
+	challenge: String,
     }
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct SlashCommandPayload {
+pub struct SlashCommandPayload {
     pub token: String,
     pub team_id: String,
     pub team_domain: String,
@@ -85,8 +89,8 @@ pub(crate) struct SlashCommandPayload {
     pub trigger_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct Message {
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Message {
     pub subtype: Option<String>,
     pub hidden: Option<bool>,
     pub message: Option<Box<Event>>,
@@ -110,9 +114,9 @@ pub(crate) struct Message {
     pub edited: Option<Edited>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag="type", rename_all="snake_case")]
-pub(crate) enum Event {
+pub enum Event {
     Message(Message),
     PinAdded {
 	channel_id: String,
@@ -147,9 +151,9 @@ pub(crate) enum Event {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag="type", rename_all="snake_case")]
-pub(crate) enum Item {
+pub enum Item {
     Message {
 	created: u64,
 	created_by: String,
@@ -158,21 +162,21 @@ pub(crate) enum Item {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct PinnedInfo {
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PinnedInfo {
     channel: String,
     pinned_ts: u64,
     pinned_by: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct Edited {
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Edited {
     user: Option<String>,
     ts: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct File {
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct File {
     pub id: String,
     pub created: u64,
     pub timestamp: u64,
@@ -217,7 +221,7 @@ pub(crate) struct File {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct Attachment {
+pub struct Attachment {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pretext: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -279,11 +283,11 @@ pub(crate) struct Attachment {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Timestamp(pub String);
+pub struct Timestamp(pub String);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag="type", rename_all="snake_case")]
-pub(crate) enum Block {
+pub enum Block {
     Actions {
 	elements: Vec<Element>,
 	block_id: Option<String>
@@ -332,7 +336,7 @@ pub(crate) enum Block {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag="type", rename_all="snake_case")]
-pub(crate) enum Element {
+pub enum Element {
     Button {
 	text: Text,
 	action_id: String,
@@ -551,7 +555,7 @@ pub(crate) enum Element {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct Style {
+pub struct Style {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bold: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -564,7 +568,7 @@ pub(crate) struct Style {
 
 #[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
 #[serde(tag="type", rename_all="snake_case")]
-pub(crate) enum Text {
+pub enum Text {
     PlainText {
 	text: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -578,7 +582,7 @@ pub(crate) enum Text {
 }
 
 #[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
-pub(crate) struct ConfirmationDialog {
+pub struct ConfirmationDialog {
     pub title: Text,
     pub text: Text,
     pub confirm: Text,
@@ -588,7 +592,7 @@ pub(crate) struct ConfirmationDialog {
 }
 
 #[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
-pub(crate) struct CompositionOption {
+pub struct CompositionOption {
     pub text: Text,
     pub value: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -598,19 +602,19 @@ pub(crate) struct CompositionOption {
 }
 
 #[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
-pub(crate) struct CompositionOptionGroup {
+pub struct CompositionOptionGroup {
     pub label: Text,
     pub options: Vec<CompositionOption>
 }
 
 #[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
-pub(crate) struct DispatchActionConfiguration {
+pub struct DispatchActionConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger_actions_on: Option<Vec<String>>
 }
 
 #[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
-pub(crate) struct ConversationListFilter {
+pub struct ConversationListFilter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -619,8 +623,8 @@ pub(crate) struct ConversationListFilter {
     pub exclude_bot_users: Option<bool>
 }
 
-#[derive(Deserialize, Debug)]
-pub(crate) struct Authorization {
+#[derive(Deserialize, Debug, Serialize)]
+pub struct Authorization {
     enterprise_id: Option<String>,
     team_id: String,
     user_id: String,
@@ -629,7 +633,7 @@ pub(crate) struct Authorization {
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct UsersList {
+pub struct UsersList {
     pub ok: bool,
     pub error: Option<String>,
     pub cache_ts: Option<u64>,
@@ -638,12 +642,12 @@ pub(crate) struct UsersList {
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct ResponseMetadata {
+pub struct ResponseMetadata {
     pub next_cursor: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct User {
+pub struct User {
     pub id: Option<String>,
     pub team_id: Option<String>,
     pub name: Option<String>,
@@ -669,7 +673,7 @@ pub(crate) struct User {
 }
 
 #[derive (Deserialize, Debug)]
-pub(crate) struct Profile {
+pub struct Profile {
     pub title: Option<String>,
     pub phone: Option<String>,
     pub skype: Option<String>,
@@ -696,7 +700,7 @@ pub(crate) struct Profile {
 }
 
 #[derive(Debug,Serialize)]
-pub(crate) struct ChatPostMessage {
+pub struct ChatPostMessage {
     pub channel: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub as_user: Option<bool>,
@@ -733,7 +737,7 @@ pub(crate) struct ChatPostMessage {
 }
 
 #[derive(Debug,Serialize)]
-pub(crate) struct ChatPostEphemeralMessage {
+pub struct ChatPostEphemeralMessage {
     pub channel: String,
     pub user: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -759,7 +763,7 @@ pub(crate) struct ChatPostEphemeralMessage {
 }
 
 #[derive(Debug,Serialize)]
-pub(crate) struct ChatUpdate {
+pub struct ChatUpdate {
     pub channel: String,
     pub ts: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -781,7 +785,7 @@ pub(crate) struct ChatUpdate {
 }
     
 #[derive(Debug,Deserialize)]
-pub(crate) struct ChatPostMessageResponse {
+pub struct ChatPostMessageResponse {
     pub ok: bool,
     pub error: Option<String>,
     pub channel: Option<String>,

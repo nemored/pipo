@@ -48,7 +48,7 @@ use crate::{
     Message,
 };
 
-mod objects;
+pub mod objects;
 use objects::{
     Message as SlackMessage,
     *
@@ -344,6 +344,7 @@ impl Slack {
 		    }
 		message
 		    = StreamExt::next(&mut self.websocket.ws_stream) => {
+			eprintln!("WS Message: {:?}", message);
 			match message {
 			    Some((cid, Ok(message))) => {
 				if message.is_text() {
@@ -408,6 +409,8 @@ impl Slack {
 
 	let url = format!("{}{}", json["url"].as_str().unwrap(),
 			  "&debug_reconnects=false");
+
+	eprintln!("WS URL: {}", url);
 		
 	self.websocket.endpoint
 	    = Some(reqwest::Url::parse(&url)
@@ -1156,6 +1159,12 @@ impl Slack {
 		event_context: _,
 	    } => {
 		self.handle_event(event, false).await
+	    },
+	    EventPayload::UrlVerification {
+		token: _,
+		challenge: _,
+	    } => {
+		return Err(anyhow!("UrlVerification is not handled."))
 	    },
 	}
     }
@@ -2185,7 +2194,7 @@ impl Slack {
 		    Ok(format!("{}{}{}{}{}",
 			       head,
 			       markdown,
-			       Slack::parse_special_chars(&text),
+			       &text,
 			       markdown.chars().rev().collect::<String>(),
 			       tail
 		    ))

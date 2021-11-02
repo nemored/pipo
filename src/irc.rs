@@ -217,6 +217,11 @@ impl IRC {
 		    }
 		Some(message)
 		    = tokio_stream::StreamExt::next(&mut irc_stream) => {
+			if let Err(e) = message {
+			    eprintln!("IRC Error: {}", e);
+
+			    break
+			}
 			let message = message.unwrap();
 			let nickname = match message.prefix {
 			    Some(Prefix::Nickname(nickname, _, _)) => nickname,
