@@ -1306,11 +1306,11 @@ impl Discord {
 		     pool: Pool,
 		     token: String,
 		     guild_id: u64,
-		     channel_mapping: &HashMap<String,String>)
+		     channel_mapping: &HashMap<Arc<String>,Arc<String>>)
 	-> anyhow::Result<Discord> {
 	let channels = channel_mapping.iter()
 	    .filter_map(|(channelname, busname)| {
-		if let Some(sender) = bus_map.get(busname) {
+		if let Some(sender) = bus_map.get(busname.as_ref()) {
 		    Some((channelname.parse::<u64>().unwrap(),
 			  HandlerChannel {
 			      sender: sender.clone(),
