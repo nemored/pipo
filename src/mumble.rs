@@ -1,6 +1,10 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::Arc,
+};
 
-use tokio::{sync::broadcast, net::ToSocketAddrs};
+use tokio::sync::broadcast;
 
 use crate::Message;
 
@@ -8,41 +12,38 @@ mod protocol;
 
 const TRANSPORT_NAME: &'static str = "Mumble";
 
-pub(crate) struct Mumble<'a, A: ToSocketAddrs> {
+pub(crate) struct Mumble {
     transport_id: usize,
-    server: A,
-    password: Option<&'a str>,
-    nickname: &'a str,
-    client_cert: Option<&'a str>,
-    server_cert: Option<&'a str>,
+    server: SocketAddr,
+    password: Arc<Option<String>>,
+    nickname: Arc<String>,
+    client_cert: Arc<Option<String>>,
+    server_cert: Arc<Option<String>>,
     comment: Option<String>,
-    channels: HashMap<String,broadcast::Sender<Message>>,
+    channels: HashMap<Arc<String>,broadcast::Sender<Message>>,
 }
 
-impl<'a, A: ToSocketAddrs> Mumble<'a, A> {
-    pub async fn new<S>(transport_id: usize,
-                        server: A,
-                        password: Option<&'a S>,
-                        nickname: &'a S,
-                        client_cert: Option<&'a S>,
-                        server_cert: Option<&'a S>,
-                        comment: Option<&S>,
-                        bus_map: &HashMap<String,broadcast::Sender<Message>>,
-                        channel_mapping: &HashMap<String,String>,
-                        voice_channel_mapping: &HashMap<String,String>)
-                        -> anyhow::Result<Mumble<'a, A>>
-    where
-        S: AsRef<str>
+impl Mumble {
+    pub async fn new(transport_id: usize,
+                     server: &str,
+                     password: Arc<Option<String>>,
+                     nickname: Arc<String>,
+                     client_cert: Arc<Option<String>>,
+                     server_cert: Arc<Option<String>>,
+                     comment: Option<&str>,
+                     bus_map: &HashMap<String,broadcast::Sender<Message>>,
+                     channel_mapping: &HashMap<Arc<String>,Arc<String>>,
+                     voice_channel_mapping: &HashMap<Arc<String>,Arc<String>>)
+                     -> anyhow::Result<Mumble>
     {
-        let password = password.map(|s| s.as_ref());
-        let nickname = nickname.as_ref();
-        let client_cert = client_cert.map(|s| s.as_ref());
-        let server_cert = server_cert.map(|s| s.as_ref());
-        let comment = comment.map(|s| s.as_ref().to_string());
+        let server = tokio::net::lookup_host(server).await?
+            .next()
+            .unwrap();
+        let comment = comment.map(|s| s.to_string());
         let channels = channel_mapping.iter()
             .chain(voice_channel_mapping.iter())
             .filter_map(|(channelname, busname)| {
-                if let Some(sender) = bus_map.get(busname) {
+                if let Some(sender) = bus_map.get(busname.as_ref()) {
                     Some((channelname.clone(), sender.clone()))
                 }
                 else {

@@ -54,13 +54,13 @@ impl IRC {
 		     server: String,
 		     use_tls: bool,
 		     img_root: &str,
-		     channel_mapping: &HashMap<String,String>,
+		     channel_mapping: &HashMap<Arc<String>,Arc<String>>,
 		     transport_id: usize)
 	-> anyhow::Result<IRC> {
 	let channels = channel_mapping.iter()
 	    .filter_map(|(channelname, busname)| {
-		if let Some(sender) = bus_map.get(busname) {
-		    Some((channelname.clone(), sender.clone()))
+		if let Some(sender) = bus_map.get(busname.as_ref()) {
+		    Some((channelname.as_ref().clone(), sender.clone()))
 		}
 		else {
 		    eprintln!("No bus named '{}' in configuration file.",

@@ -90,13 +90,13 @@ impl Slack {
 		     pool: Pool,
 		     token: String,
 		     bot_token: String,
-		     channel_mapping: &HashMap<String,String>)
+		     channel_mapping: &HashMap<Arc<String>,Arc<String>>)
 	-> anyhow::Result<Slack>
     {
 	let channels = channel_mapping.iter()
 	    .filter_map(|(channelname, busname)| {
-		if let Some(sender) = bus_map.get(busname) {
-		    Some((channelname.clone(), sender.clone()))
+		if let Some(sender) = bus_map.get(busname.as_ref()) {
+		    Some((channelname.as_ref().clone(), sender.clone()))
 		}
 		else {
 		    eprintln!("No bus named '{}' in configuration file.",

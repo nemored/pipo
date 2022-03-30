@@ -207,41 +207,41 @@ struct ConfigBus {
 #[serde(tag="transport")]
 enum ConfigTransport {
     IRC {
-	nickname: String,
-	server: String,
+	nickname: Arc<String>,
+	server: Arc<String>,
 	use_tls: bool,
-	img_root: String,
-	channel_mapping: HashMap<String,String>,
+	img_root: Arc<String>,
+	channel_mapping: HashMap<Arc<String>,Arc<String>>,
     },
     Discord {
-	token: String,
+	token: Arc<String>,
 	guild_id: u64,
-	channel_mapping: HashMap<String,String>,
+	channel_mapping: HashMap<Arc<String>,Arc<String>>,
     },
     Slack {
-	token: String,
-	bot_token: String,
-	channel_mapping: HashMap<String,String>,
+	token: Arc<String>,
+	bot_token: Arc<String>,
+	channel_mapping: HashMap<Arc<String>,Arc<String>>,
     },
     Minecraft {
-	username: String,
-	buses: Vec<String>,
+	username: Arc<String>,
+	buses: Vec<Arc<String>>,
     },
     Mumble {
 	server: String,
-	password: Option<String>,
-	nickname: String,
-	client_cert: Option<String>,
-	server_cert: Option<String>,
+	password: Arc<Option<String>>,
+	nickname: Arc<String>,
+	client_cert: Arc<Option<String>>,
+	server_cert: Arc<Option<String>>,
 	comment: Option<String>,
-	channel_mapping: HashMap<String,String>,
-	voice_channel_mapping: HashMap<String,String>,
+	channel_mapping: HashMap<Arc<String>,Arc<String>>,
+	voice_channel_mapping: HashMap<Arc<String>,Arc<String>>,
     },
     Rachni {
-	server: String,
-	api_key: String,
+	server: Arc<String>,
+	api_key: Arc<String>,
 	interval: u64,
-	buses: Vec<String>
+	buses: Arc<Vec<String>>,
     },
 }
 
@@ -350,7 +350,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
     // all_transport_tasks.push(handle);
     
     for transport_id in 0..config_json.transports.len() {
-	match config_json.transports[transport_id] {
+	match &config_json.transports[transport_id] {
 	    ConfigTransport::IRC {
 		nickname,
 		server,
@@ -364,7 +364,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
 					    db_pool.clone(),
 					    nickname.to_string(),
 					    server.to_string(),
-					    use_tls,
+					    *use_tls,
 					    &img_root,
 					    &channel_mapping,
 					    transport_id).await?;
@@ -396,7 +396,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
 						pipo_id.clone(),
 						db_pool.clone(),
 						token.to_string(),
-						guild_id,
+						*guild_id,
 						&channel_mapping).await?;
 		let handle = tokio::spawn(async move {
  		    match instance.connect().await {
@@ -447,11 +447,11 @@ pub async fn inner_main() -> anyhow::Result<()> {
 	    } => {
                 let instance = Mumble::new(transport_id,
                                            &server,
-                                           password.as_ref(),
-                                           &nickname,
-                                           client_cert.as_ref(),
-                                           server_cert.as_ref(),
-                                           comment.as_ref(),
+                                           password.clone(),
+                                           nickname.clone(),
+                                           client_cert.clone(),
+                                           server_cert.clone(),
+                                           comment.as_deref(),
                                            &bus_map,
                                            &channel_mapping,
                                            &voice_channel_mapping).await?;
@@ -476,7 +476,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
 					   &bus_map,
 					   &server,
 					   &api_key,
-					   interval,
+					   *interval,
 					   &buses,
 					   db_pool.clone(),
 					   pipo_id.clone()).await?;
