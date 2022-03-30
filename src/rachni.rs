@@ -84,15 +84,9 @@ impl Rachni {
 		    new_stream_map.insert(stream.to_string());
 		    
 		    if let None = streams.get(stream) {
-			let url = match details["URL"].as_str() {
-			    Some(s) => s,
-			    None => {
-				eprintln!("Stream URL is not a string.");
-				continue
-			    }
-			};
-			let message = format!("has started streaming: {} ",
-					      url);
+			let message = format!("has started streaming: \
+					       rtmp://{}/live/{} ",
+					      self.server, stream);
 			    
 			if let Err(e) = self.send_message(&stream, &message)
 			    .await {
