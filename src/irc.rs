@@ -389,18 +389,30 @@ impl IRC {
 	    
 	    if !has_text && !has_fallback { continue }
 
-	    let message = if author_name.is_empty() {
-		format!("\x01ACTION [\x02{}\x02] {}\x01", service_name, text)
-	    }
-	    else {
-		format!("\x01ACTION [{}!\x02{}\x02] {}\x01",
-			&service_name[..1].to_uppercase(), author_name, text)
-	    };
+	    let mut line_counter = 0;
+	    
+	    for msg in text.split("\n") {
+		line_counter += 1;
 
-	    if let Err(e) = client.send_privmsg(channel.clone(),
-						message.clone()) {
-		eprintln!("Failed to send message '{}' channel {}: {:#}",
-			  message, channel, e);
+		if msg == "" { continue }
+		
+		let message = if author_name.is_empty() {
+		    format!("\x01ACTION [\x02{}\x02] {}\x01", service_name,
+			    msg)
+		}
+		else {
+		    format!("\x01ACTION [{}!\x02{}\x02] {}\x01",
+			    &service_name[..1].to_uppercase(), author_name,
+			    msg)
+		};
+
+		if let Err(e) = client.send_privmsg(channel.clone(),
+						    message.clone()) {
+		    eprintln!("Failed to send message '{}' channel {}: {:#}",
+			      message, channel, e);
+		}
+
+		if line_counter > 6 { break }
 	    }
 	}
     }

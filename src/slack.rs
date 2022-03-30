@@ -344,11 +344,11 @@ impl Slack {
 		    }
 		message
 		    = StreamExt::next(&mut self.websocket.ws_stream) => {
-			eprintln!("WS Message: {:?}", message);
+			// eprintln!("WS Message: {:?}", message);
 			match message {
 			    Some((cid, Ok(message))) => {
 				if message.is_text() {
-				    eprintln!("<- Slack: {:?}", message);
+				    // eprintln!("<- Slack: {:?}", message);
 				    let response: Response
 					= serde_json::from_str(&message
 							       .to_text()
@@ -382,7 +382,10 @@ impl Slack {
 		    }
 		else => { break }
 	    }
-	    self.websocket.ws_sink.as_mut().unwrap().flush().await?;
+	    match self.websocket.ws_sink.as_mut() {
+		Some(ws) => ws.flush().await?,
+		None => self.connect_websocket().await?
+	    }
 	}
 	
 	Ok(())
@@ -410,7 +413,7 @@ impl Slack {
 	let url = format!("{}{}", json["url"].as_str().unwrap(),
 			  "&debug_reconnects=false");
 
-	eprintln!("WS URL: {}", url);
+	// eprintln!("WS URL: {}", url);
 		
 	self.websocket.endpoint
 	    = Some(reqwest::Url::parse(&url)
