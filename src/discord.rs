@@ -1190,7 +1190,7 @@ impl RealHandler {
 					    "%m months ago"
 					},
 					// 20 April 2021 16:20
-					_ => "%d %BB %Y %H:%M"
+					_ => "%d %B %Y %H:%M"
 				    };
 
 				    ret.push_str(&dt.format(fmt).to_string());
