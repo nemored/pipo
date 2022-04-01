@@ -25,6 +25,7 @@ pub mod slack;
 mod discord;
 mod mumble;
 mod rachni;
+pub(crate) mod protos;
 
 use crate::irc::IRC;
 use crate::slack::Slack;
@@ -228,7 +229,7 @@ enum ConfigTransport {
 	buses: Vec<Arc<String>>,
     },
     Mumble {
-	server: String,
+	server: Arc<String>,
 	password: Arc<Option<String>>,
 	nickname: Arc<String>,
 	client_cert: Arc<Option<String>>,
@@ -445,16 +446,16 @@ pub async fn inner_main() -> anyhow::Result<()> {
 		channel_mapping,
 		voice_channel_mapping
 	    } => {
-                let instance = Mumble::new(transport_id,
-                                           &server,
-                                           password.clone(),
-                                           nickname.clone(),
-                                           client_cert.clone(),
-                                           server_cert.clone(),
-                                           comment.as_deref(),
-                                           &bus_map,
-                                           &channel_mapping,
-                                           &voice_channel_mapping).await?;
+                let mut instance = Mumble::new(transport_id,
+                                               server.clone(),
+                                               password.clone(),
+                                               nickname.clone(),
+                                               client_cert.clone(),
+                                               server_cert.clone(),
+                                               comment.as_deref(),
+                                               &bus_map,
+                                               &channel_mapping,
+                                               &voice_channel_mapping).await?;
                 let handle = tokio::spawn(async move {
                     match instance.run().await {
                         Ok(_) => eprintln!("Mumble::run() exited Ok"),
