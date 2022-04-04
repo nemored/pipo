@@ -455,7 +455,9 @@ pub async fn inner_main() -> anyhow::Result<()> {
                                                comment.as_deref(),
                                                &bus_map,
                                                &channel_mapping,
-                                               &voice_channel_mapping).await?;
+                                               &voice_channel_mapping,
+                                               pipo_id.clone(),
+                                               db_pool.clone()).await?;
                 let handle = tokio::spawn(async move {
                     match instance.run().await {
                         Ok(_) => eprintln!("Mumble::run() exited Ok"),
