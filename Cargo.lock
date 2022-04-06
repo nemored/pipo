@@ -1096,6 +1096,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "parser"
+version = "0.1.0"
+
+[[package]]
 name = "percent-encoding"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1150,6 +1154,7 @@ dependencies = [
  "lazy_static",
  "nix 0.23.0",
  "outer_cgi",
+ "parser",
  "protobuf",
  "protoc-rust",
  "regex",
