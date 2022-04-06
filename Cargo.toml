@@ -19,6 +19,7 @@ irc = "0.15"
 lazy_static = "1.4"
 nix = "0.23"
 outer_cgi = "0.2"
+parser = { path = "./parser" }
 protobuf = "2"
 regex = "1.5"
 reqwest = "0.11"

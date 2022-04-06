@@ -1,0 +1,7 @@
+/target
+*~
+\#*\#
+.\#*
+*.sqlite3
+*.json
+.DS_Store
