@@ -1,7 +1,3 @@
-pub trait Element {
-    
-}
-
 struct Unit {
     pixels: i32,
     percentage: i32,
@@ -29,50 +25,44 @@ pub struct Style<'a> {
     color: Color,
 }
 
-struct Text<'a> {
-    text: &'a str,
-}
-
-pub struct Span<'a> {
-    style: Option<Style<'a>>,
-    elements: Vec<&'a dyn Element>,
-}
-
-struct Paragraph<'a> {
-    style: Style<'a>,
-    elements: Vec<&'a dyn Element>,
-}
-
-struct Preformatted<'a> {
-    style: Style<'a>,
-    elements: Vec<&'a dyn Element>,
-}
-
-struct Bold<'a> {
-    style: Style<'a>,
-    elements: Vec<&'a dyn Element>,
-}
-
-struct Italic<'a> {
-    style: Style<'a>,
-    elements: Vec<&'a dyn Element>,
-}
-
-struct Underline<'a> {
-    style: Style<'a>,
-    elements: Vec<&'a dyn Element>,
-}
-
-struct Image<'a> {
-    source: &'a str,
-}
-
-struct Reference<'a> {
-    location: &'a str,
+pub enum Element<'a> {
+    Text {
+        text: &'a str,
+    },
+    Span {
+        style: Option<Style<'a>>,
+        elements: Vec<Element<'a>>,
+    },
+    Paragraph {
+        style: Style<'a>,
+        elements: Vec<Element<'a>>,
+    },
+    Preformatted {
+        style: Style<'a>,
+        elements: Vec<Element<'a>>,
+    },
+    Bold {
+        style: Style<'a>,
+        elements: Vec<Element<'a>>,
+    },
+    Italic {
+        style: Style<'a>,
+        elements: Vec<Element<'a>>,
+    },
+    Underline {
+        style: Style<'a>,
+        elements: Vec<Element<'a>>,
+    },
+    Image {
+        source: &'a str,
+    },
+    Reference {
+        location: &'a str,
+    },
 }
 
 pub struct Document<'a> {
-    elements: Vec<&'a dyn Element>,
+    elements: Vec<Element<'a>>,
 }
 
 impl Document<'_> {
@@ -80,5 +70,9 @@ impl Document<'_> {
         let elements = Vec::new();
         
         Document { elements }
+    }
+
+    pub fn push(&mut self, element: Element) {
+        self.elements.push(element);
     }
 }
