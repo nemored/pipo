@@ -1,5 +1,5 @@
 FROM rust:1.67-alpine as builder
-RUN apk add libc-dev openssl-dev pkgconfig protoc
+RUN apk add libc-dev openssl-dev pkgconfig protoc sqlite-dev
 WORKDIR /usr/src/pipo
 COPY . .
 RUN cargo install --path .
