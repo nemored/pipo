@@ -27,7 +27,10 @@ use serenity::{
 	    Message as SerenityMessage,
 	},
 	prelude::*,
-	gateway::Ready
+	gateway::{
+	    Ready,
+	    GatewayIntents,
+	},
     },
     prelude::*,
     utils::MessageBuilder,
@@ -301,7 +304,7 @@ impl RealHandler {
 	// Setup threads
 	for thread in guild.threads {
 	    eprintln!("Thread: {}", thread);
-	    if let Some(channel_id) = thread.category_id {
+	    if let Some(channel_id) = thread.parent_id {
 		// If this is a followed channel...
 		if let Some(_) = self.shared.get_channel(channel_id) {
 		    // ...insert the thread into threads.
@@ -632,7 +635,7 @@ impl RealHandler {
     }
 
     async fn thread_create(&mut self, _ctx: Context, thread: GuildChannel) {
-	if let Some(channel_id) = thread.category_id {
+	if let Some(channel_id) = thread.parent_id {
 	    // When a new thread is created, check to see if it is
 	    // a child of a channel PIPO is in before continuing.
 	    if !self.shared.contains_channel(channel_id) { return }
@@ -803,26 +806,6 @@ impl RealHandler {
 
     async fn ready(&mut self, _: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
-	for gs in ready.guilds {
-	    eprintln!("GuildStatus: {:?}", gs);
-	    match gs {
-		GuildStatus::OnlineGuild(guild) => {
-		    for thread in guild.threads {
-			eprintln!("Thread: {}", thread);
-			if let Some(channel_id) = thread.category_id {
-			    // If this is a followed channel...
-			    if self.shared.contains_channel(channel_id) {
-				// ...insert the thread into threads.
-				self.shared.insert_thread(thread.id,
-							   channel_id);
-			    }
-			}
-		    }
-		},
-		_ => ()
-	    }
-	}
-	eprintln!("Threads: {:?}", self.shared.format_threads())
     }
 
 }
@@ -1773,7 +1756,8 @@ impl Discord {
 	    pool: self.pool.clone(),
 	    pipo_id: self.pipo_id.clone(),
 	})};
-	let mut client = Client::builder(self.token.clone())
+	let mut client = Client::builder(self.token.clone(),
+					 GatewayIntents::all())
 	    .event_handler(handler).await?;
 
 	self.cache_http = Some(client.cache_and_http.clone());

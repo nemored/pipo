@@ -1,16 +1,10 @@
+mod error;
+mod mumble;
 mod types;
 
-use types::{Element, Document, Span, Style};
-
-pub enum ParseError {
-    BadAttributes,
-    UnclosedQuotes,
-    UnclosedTag,
-    UnopenedTag,
-    UnsupportedTag,
-}
-
-type ParseResult<T> = Result<T, ParseError>;
+use error::{ParseError, ParseResult};
+use types::{Element, Document, Style};
+use mumble::Mumble;
 
 fn parse_attributes(input: &str) -> ParseResult<Vec<(&str,Option<&str>)>> {
     let mut input = input;
@@ -100,15 +94,18 @@ pub fn parse_mumble_html(input: &str) -> ParseResult<Document> {
     let mut document = Document::new();
     let mut word = String::new();
     let mut in_tag = false;
+    let mut offset = 0;
     
     for chr in input.chars() {
+        offset += 1;
         match chr {
             '<' => {
+                parse_tag(&input[offset..]);
                 if in_tag {
                     return Err(ParseError::UnclosedTag);
                 }
                 else {
-                    parse_inner(&word);
+                    parse_tag(&word);
                     in_tag = true;
                 }
             },
