@@ -1183,7 +1183,7 @@ dependencies = [
  "irc",
  "lazy_static",
  "nix 0.23.0",
- "outer_cgi",
+ "pipo_cgi",
  "protobuf",
  "protoc-rust",
  "regex",
@@ -1199,6 +1199,13 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite",
  "webpki-roots",
+]
+
+[[package]]
+name = "pipo_cgi"
+version = "0.1.0"
+dependencies = [
+ "outer_cgi",
 ]
 
 [[package]]
