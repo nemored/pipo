@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     env,
     fmt,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex}, os,
 };
 
 use anyhow::{
@@ -253,20 +253,22 @@ struct ParsedConfig {
 }
 
 pub async fn inner_main() -> anyhow::Result<()> {
-    // Parse command line arguments
+	let args: Vec<String> = env::args().collect();
+	let config_path = args.get(1).cloned().or(env::var("CONFIG_PATH").ok());
+	let db_path = args.get(2).cloned().or(env::var("DB_PATH").ok());
+	// Parse command line arguments
     //
     // Usage: ./pipo path-oogkm.json [path-to-db.db3]
-    let args: Vec<String> = env::args().collect();
 
-    if args.len() != 3 {
+    if config_path.is_none() || db_path.is_none() {
 	println!("Usage: {} path-to-config.json [path-to-db.sqlite3]",
 		 args.get(0).unwrap_or(&"pipo".to_owned()));
 	return Ok(()) // no, don't do this
     }
 
-    let mut config = File::open(&args[1]).await
+    let mut config = File::open(config_path.unwrap()).await
 	.context("Couldn't open config file")?;
-    let db_pool = Config::new(&args[2]).create_pool();
+    let db_pool = Config::new(&db_path.unwrap()).create_pool();
 
     let pipo_id: Arc<Mutex<i64>>
 	= Arc::new(Mutex::new(db_pool.get().await?.interact(move |conn| -> anyhow::Result<i64> {
