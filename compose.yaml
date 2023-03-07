@@ -1,8 +1,0 @@
-services:
-  pipo:
-    build: .
-    volumes:
-      - pipo-sqlite-data:/var/lib/pipo
-
-volumes:
-  pipo-sqlite-data:
