@@ -24,7 +24,7 @@ nix = "0.23"
 pipo_cgi = { path = "pipo_cgi", optional = true }
 #parser = { path = "./parser" }
 protobuf = "2"
-regex = "1.5"
+regex = "1.7"
 reqwest = "0.11"
 rusqlite = "0.25"
 rustls = { version = "0.20", features = ["dangerous_configuration"] }
