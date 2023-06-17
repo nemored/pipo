@@ -679,10 +679,14 @@ impl Mumble {
         let conn = self.pool.get().await.unwrap();
         let pipo_id = *self.pipo_id.lock().unwrap();
 
-        conn.interact(move |conn| -> anyhow::Result<usize> {
+        // TODO: ugly error handling needs fixing
+        match conn.interact(move |conn| -> anyhow::Result<usize> {
             Ok(conn.execute("INSERT OR REPLACE INTO messages (id)
                              VALUES (?1)", params![pipo_id])?)
-        }).await?;
+        }).await {
+            Ok(res) => res,
+            Err(_) => Err(anyhow!("Interact Error"))
+        }?;
 
         let ret = pipo_id;
         let mut pipo_id = self.pipo_id.lock().unwrap();
