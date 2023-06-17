@@ -1577,11 +1577,12 @@ impl Slack {
 	let pipo_id = *self.pipo_id.lock().unwrap();
 	let ts = String::from(ts);
 
+	// TODO: ugly error handling needs fixing
 	conn.interact(move |conn| -> anyhow::Result<usize> {
 		Ok(conn.execute("INSERT OR REPLACE INTO messages (id, slackid) 
                                  VALUES (?1, ?2)",
 				params![pipo_id, Some(ts.clone())])?)
-	    }).await?;
+	    }).await.unwrap_or_else(|_| Err(anyhow!("Interact Error")))?;
 
 	let ret = pipo_id;
 	let mut pipo_id = self.pipo_id.lock().unwrap();
@@ -1595,11 +1596,12 @@ impl Slack {
 	-> anyhow::Result<()> {
 	let conn = self.pool.get().await.unwrap();
 
+	// TODO: ugly error handling needs fixing
 	conn.interact(move |conn| -> anyhow::Result<usize> {
 		Ok(conn.execute("UPDATE messages SET slackid = ?2 
                                  WHERE id = ?1",
 				params![pipo_id, Some(ts.clone())])?)
-	    }).await?;
+	    }).await.unwrap_or_else(|_| Err(anyhow!("Interact Error")))?;
 
 	Ok(())
     }
@@ -1636,12 +1638,13 @@ impl Slack {
 	let old_ts = ts;
 	let ts = String::from(old_ts);
 	
+	// TODO: ugly error handling needs fixing
 	let ret = match conn.interact(move |conn| -> anyhow::Result<i64> {
 	    // Slack::debug_print_messages(&conn)?;
 	    
 	    Ok(conn.query_row("SELECT id FROM messages WHERE slackid = ?1",
 			      params![ts], |row| row.get(0))?)
-	}).await {
+	}).await.unwrap_or_else(|_| Err(anyhow!("Interact Error"))) {
 	    Ok(id) => Some(id),
 	    Err(e) => {
 		eprintln!("Error#: {}", e);
@@ -1656,10 +1659,11 @@ impl Slack {
 	-> anyhow::Result<Option<String>> {
 	let conn = self.pool.get().await.unwrap();
 	
+	// TODO: ugly error handling needs fixing
 	let ret = conn.interact(move |conn| -> anyhow::Result<Option<String>> {
 	    Ok(conn.query_row("SELECT slackid FROM messages WHERE id = ?1",
 			    params![pipo_id], |row| row.get(0))?)
-	}).await?;
+	}).await.unwrap_or_else(|_| Err(anyhow!("Interact Error")))?;
 
 	Ok(ret)
     }
@@ -1668,11 +1672,12 @@ impl Slack {
 	-> anyhow::Result<Option<String>> {
 	let conn = self.pool.get().await.unwrap();
 
+	// TODO: ugly error handling needs fixing
 	let ret = conn.interact(move |conn| -> anyhow::Result<Option<String>> {
 	    Ok(conn.query_row("SELECT slackid FROM messages 
                                WHERE discordid = ?1",
 			      params![discord_id], |row| row.get(0))?)
-	}).await?;
+	}).await.unwrap_or_else(|_| Err(anyhow!("Interact Error")))?;
 
 	Ok(ret)
     }
@@ -1681,11 +1686,12 @@ impl Slack {
 	-> anyhow::Result<Option<u64>> {
 	let conn = self.pool.get().await.unwrap();
 	
+	// TODO: ugly error handling needs fixing
 	let ret = conn.interact(move |conn| -> anyhow::Result<Option<u64>> {
 	    Ok(conn.query_row("SELECT discordid FROM messages 
                                WHERE slackid = ?1",
 			      params![slack_id], |row| row.get(0))?)
-	}).await?;
+	}).await.unwrap_or_else(|_| Err(anyhow!("Interact Error")))?;
 
 	Ok(ret)
     }

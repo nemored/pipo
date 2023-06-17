@@ -821,11 +821,15 @@ impl RealHandler {
 	eprintln!("Inserting message_id {} into table at id {}", message_id,
 		  pipo_id);
 	
-	conn.interact(move |conn| -> anyhow::Result<usize> {
+	// TODO: ugly error handling needs fixing
+	match conn.interact(move |conn| -> anyhow::Result<usize> {
 	    Ok(conn.execute("INSERT OR REPLACE INTO messages (id, discordid) 
                              VALUES (?1, ?2)",
 			    params![pipo_id, message_id])?)
-	}).await?;
+	}).await {
+		Ok(res) => res,
+		Err(_) => return Err(anyhow!("Interact Error!"))
+	}?;
 
 	let ret = pipo_id;
 	let mut pipo_id = self.pipo_id.lock().unwrap();
@@ -840,10 +844,14 @@ impl RealHandler {
 	let conn = self.pool.get().await.unwrap();
 	let message_id = *message_id.as_ref().as_u64();
 	
-	Ok(conn.interact(move |conn| -> anyhow::Result<i64> {
+	// TODO: ugly error handling needs fixing
+	Ok(match conn.interact(move |conn| -> anyhow::Result<i64> {
 	    Ok(conn.query_row("SELECT id FROM messages WHERE discordid = ?1",
 			    params![message_id], |row| row.get(0))?)
-	}).await?)
+	}).await {
+		Ok(res) => res,
+		Err(_) => return Err(anyhow!("Interact Error"))	
+	}?)
     }
 
     async fn get_sender_and_thread(&self, channel_id: ChannelId,
@@ -1348,11 +1356,15 @@ impl Discord {
 
 	eprintln!("Adding {} ID: {}", message_id, pipo_id);
 
-	conn.interact(move |conn| -> anyhow::Result<usize> {
+	// TODO: ugly error handling needs fixing
+	match conn.interact(move |conn| -> anyhow::Result<usize> {
 		Ok(conn.execute("UPDATE messages SET discordid = ?2
                                  WHERE id = ?1",
 				params![pipo_id, message_id])?)
-	}).await?;
+	}).await {
+		Ok(res) => res,
+		Err(_) => Err(anyhow!("Interact Error"))	
+	}?;
 
 	Ok(())
     }
@@ -1361,10 +1373,14 @@ impl Discord {
 	-> anyhow::Result<Option<u64>> {
 	let conn = self.pool.get().await.unwrap();
 	
-	let ret = conn.interact(move |conn| -> anyhow::Result<Option<u64>> {
+	// TODO: ugly error handling needs fixing
+	let ret = match conn.interact(move |conn| -> anyhow::Result<Option<u64>> {
 	    Ok(conn.query_row("SELECT discordid FROM messages WHERE id = ?1",
 			    params![pipo_id], |row| row.get(0))?)
-	}).await?;
+	}).await{
+		Ok(res) => res,
+		Err(_) => Err(anyhow!("Interact Error"))	
+	}?;
 
 	eprintln!("Found ts {:?} at id {}", ret, pipo_id);
 
@@ -1376,11 +1392,15 @@ impl Discord {
 	let conn = self.pool.get().await.unwrap();
 	let old_slack_id = slack_id.clone();
 	
-	let ret = conn.interact(move |conn| -> anyhow::Result<Option<u64>> {
+	// TODO: ugly error handling needs fixing
+	let ret = match conn.interact(move |conn| -> anyhow::Result<Option<u64>> {
 	    Ok(conn.query_row("SELECT discordid FROM messages 
                                WHERE slackid = ?1",
 			      params![slack_id], |row| row.get(0))?)
-	}).await?;
+	}).await {
+		Ok(res) => res,
+		Err(_) => Err(anyhow!("Interact Error"))
+	}?;
 
 	eprintln!("Found ts {:?} at id {}", ret, old_slack_id);
 

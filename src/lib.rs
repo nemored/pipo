@@ -9,7 +9,7 @@ use anyhow::{
     anyhow,
     Context,
 };
-use deadpool_sqlite::Config;
+use deadpool_sqlite::{Config, Runtime};
 use regex::bytes::Regex;
 use rusqlite::Error::QueryReturnedNoRows;
 use serde::Deserialize;
@@ -268,8 +268,9 @@ pub async fn inner_main() -> anyhow::Result<()> {
 
     let mut config = File::open(config_path.unwrap()).await
 	.context("Couldn't open config file")?;
-    let db_pool = Config::new(&db_path.unwrap()).create_pool();
+    let db_pool = Config::new(&db_path.unwrap()).create_pool(Runtime::Tokio1)?;
 
+	// TODO: ugly error handling needs fixing
     let pipo_id: Arc<Mutex<i64>>
 	= Arc::new(Mutex::new(db_pool.get().await?.interact(move |conn| -> anyhow::Result<i64> {
 	    match conn.query_row("SELECT name 
@@ -307,7 +308,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
 		Ok(id) => id,
 		Err(_) => 0
 	    })
-	}).await? + 1));
+	}).await.unwrap_or_else(|_| Err(anyhow!("Interact Error")))? + 1));
 
     // Parse JSON
     let mut read_buf = Vec::new();
