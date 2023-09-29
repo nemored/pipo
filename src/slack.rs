@@ -459,7 +459,7 @@ impl Slack {
 	};
 
 	let mut shortcode = None;
-	if let Some(emoji) = emojis::get_by_shortcode(&emoji) {
+	if let Some(emoji) = emojis::lookup(&emoji) {
 	    if let Some(s) = emoji.shortcode() {
 		shortcode = Some(s.to_string());
 	    }
