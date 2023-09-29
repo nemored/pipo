@@ -1468,25 +1468,27 @@ impl Discord {
 	return Ok(channel)
     }
 
-    async fn find_emoji<H: AsRef<Http>>(&self, http: H, emoji: &str)
+    async fn find_emoji<H: AsRef<Http>>(&self,
+					http: H,
+					emoji: &str)
 	-> anyhow::Result<Option<Emoji>> {
-		if let Some(emoji) = self.shared.get_emoji(emoji) {
-			return Ok(Some(emoji))
-		}
-		
-		let new_emojis = self.guild.emojis(http).await?;
-		
-		self.shared.set_emojis(new_emojis.into_iter().map(|e| {
-			(e.name.clone(), e)
-		}).collect());
-		
-		if let Some(emoji) = self.shared.get_emoji(emoji) {
-			return Ok(Some(emoji))
-		}
-		else {
-			return Ok(None)
-		}
+	if let Some(emoji) = self.shared.get_emoji(emoji) {
+	    return Ok(Some(emoji))
 	}
+
+	let new_emojis = self.guild.emojis(http).await?;
+
+	self.shared.set_emojis(new_emojis.into_iter().map(|e| {
+	    (e.name.clone(), e)
+	}).collect());
+
+	if let Some(emoji) = self.shared.get_emoji(emoji) {
+	    return Ok(Some(emoji))
+	}
+	else {
+	    return Ok(None)
+	}
+    }
 
     async fn handle_action_message(&self, channel: ChannelId, pipo_id: i64,
 				   transport: String, username: String,
@@ -1615,11 +1617,11 @@ impl Discord {
 				     emoji: String, remove: bool)
 	-> anyhow::Result<()> {
 	let http = self.cache_http.as_ref().unwrap().http();
-	let emoji = match emojis::get_by_shortcode(&emoji) {
+	let emoji = match emojis::lookup(&emoji) {
 	    Some(e) => ReactionType::Unicode(e.as_str().to_string()),
 	    None => match self.find_emoji(http, &emoji).await? {
-			Some(e) => ReactionType::from(e),
-			None => return Err(anyhow!("Couldn't find emoji"))
+		Some(e) => ReactionType::from(e),
+		None => return Err(anyhow!("Couldn't find emoji"))
 	    }
 	};
 	let message_id = self.select_discordid_from_messages(pipo_id).await?;
