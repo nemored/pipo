@@ -18,14 +18,14 @@ use reqwest::{
 use rusqlite::params;
 use serde_json::Value;
 use tokio::{
-    sync::broadcast,
+    sync::mpsc,
     time::{
 	self,
 	Duration
     }
 };
 
-use crate::Message;
+use crate::{Message, Bus};
 
 const TRANSPORT_NAME: &'static str = "Rachni";
 
@@ -34,21 +34,21 @@ pub(crate) struct Rachni {
     server: String,
     api_key: String,
     interval: u64,
-    bus_map: HashMap<String, broadcast::Sender<Message>>,
+    bus_map: HashMap<Arc<Bus>, mpsc::Sender<Message>>,
     pool: Pool,
     pipo_id: Arc<Mutex<i64>>
 }
 
 impl Rachni {
     pub async fn new(transport_id: usize,
-		     bus_map: &HashMap<String, broadcast::Sender<Message>>,
+		     bus_map: &HashMap<Arc<Bus>, (mpsc::Sender<Message>, mpsc::Receiver<Message>)>,
 		     server: &str, api_key: &str, interval: u64,
-		     buses: &Vec<String>, pool: Pool, pipo_id: Arc<Mutex<i64>>)
+		     buses: &Vec<Arc<Bus>>, pool: Pool, pipo_id: Arc<Mutex<i64>>)
 	-> anyhow::Result<Rachni> {
 	let server = String::from(server);
 	let api_key = String::from(api_key);
 	let bus_map = buses.iter().filter_map(|bus| {
-	    bus_map.get(bus).map(|sender| (bus.clone(), sender.clone()))
+	    bus_map.get(bus).map(|(sender, _)| (bus.clone(), sender.clone()))
 	}).collect();
 
 	Ok(Rachni { transport_id, server, api_key, interval, bus_map, pool,
@@ -79,7 +79,7 @@ impl Rachni {
 						   .as_str())?;
 
 	    if let Some(map) = json.as_object() {
-		for (stream, details) in map {
+		for (stream, _) in map {
 		    let stream = stream.as_str();
 
 		    new_stream_map.insert(stream.to_string());
@@ -129,21 +129,22 @@ impl Rachni {
 	let avatar_url
 	    = Some(format!("http://{}/profiles/default/profile_default.png",
 		      self.server));
-	let message = Message::Action {
-	    sender: self.transport_id,
-	    pipo_id,
-	    transport: TRANSPORT_NAME.to_string(),
-	    username: username.to_string(),
-	    avatar_url,
-	    thread: None,
-	    message: Some(message.to_string()),
-	    attachments: None,
-	    is_edit: false,
-	    irc_flag: false,
-	};
 	
-	for (_, sender) in self.bus_map.iter() {
-	    sender.send(message.clone())?;
+	for (bus, sender) in self.bus_map.iter() {
+	    let message = Message::Action {
+	        sender: self.transport_id,
+	        pipo_id,
+	        transport: TRANSPORT_NAME.to_string(),
+                bus: bus.as_ref().to_owned(),
+	        username: username.to_string(),
+	        avatar_url: avatar_url.to_owned(),
+	        thread: None,
+	        message: Some(message.to_string()),
+	        attachments: None,
+	        is_edit: false,
+	        irc_flag: false,
+	    };
+	    sender.send(message.clone()).await?;
 	}
 
 	Ok(())
