@@ -3,9 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use deadpool_sqlite::{
-    Pool,
-};
+use deadpool_sqlite::Pool;
 use irc::{
     client::prelude::{
 	Client,
@@ -18,20 +16,13 @@ use irc::{
 use lazy_static::lazy_static;
 use regex::Regex;
 use rusqlite::params;
-use tokio::{
-    sync::{
-	broadcast,
-    },
-};
-use tokio_stream::{
-    StreamMap,
-    wrappers::BroadcastStream,
-};
+use tokio::sync::mpsc;
 
 use anyhow::anyhow;
+use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use crate::{
     Attachment,
-    Message,
+    Message, Bus,
 };
 
 
@@ -41,34 +32,42 @@ pub(crate) struct IRC {
     transport_id: usize,
     config: Config,
     img_root: String,
-    channels: HashMap<String,broadcast::Sender<Message>>,
+    channel_map: HashMap<String,(Arc<Bus>,mpsc::Sender<Message>)>,
+    bus_map: HashMap<Arc<Bus>,String>,
     pool: Pool,
+    inbox: ReceiverStream<Message>,
     pipo_id: Arc<Mutex<i64>>
 }
 
 impl IRC {
-    pub async fn new(bus_map: &HashMap<String,broadcast::Sender<Message>>,
+    pub async fn new(bus_map: &HashMap<Arc<Bus>,(mpsc::Sender<Message>, mpsc::Receiver<Message>)>,
+                     inbox: mpsc::Receiver<Message>,
 		     pipo_id: Arc<Mutex<i64>>,
 		     pool: Pool,
 		     nickname: String,
 		     server: String,
 		     use_tls: bool,
 		     img_root: &str,
-		     channel_mapping: &HashMap<Arc<String>,Arc<String>>,
+		     channel_mapping: &HashMap<Arc<String>,Arc<Bus>>,
 		     transport_id: usize)
 	-> anyhow::Result<IRC> {
-	let channels = channel_mapping.iter()
-	    .filter_map(|(channelname, busname)| {
-		if let Some(sender) = bus_map.get(busname.as_ref()) {
-		    Some((channelname.as_ref().clone(), sender.clone()))
+        let inbox = ReceiverStream::new(inbox);
+	let channel_map: HashMap<String,(Arc<Bus>,mpsc::Sender<Message>)> = channel_mapping.iter()
+	    .filter_map(|(channelname, bus)| {
+		if let Some((sender, _)) = bus_map.get(bus.as_ref()) {
+		    Some((channelname.as_ref().clone(), (bus.clone(), sender.clone())))
 		}
 		else {
 		    eprintln!("No bus named '{}' in configuration file.",
-			      busname);
+			      bus.name);
 		    None
 		}
 	    }
 	    ).collect();
+        let bus_map = channel_map
+            .iter()
+            .map(|(a, (x, _))| (x.clone(), a.clone()))
+            .collect();
 	// Can this be done without an if/else?
 	let config = if let Some((server_addr, server_port))
 	    = server.rsplit_once(':') {
@@ -92,29 +91,31 @@ impl IRC {
 	Ok(IRC {
 	    config,
 	    img_root: img_root.to_string(),
-	    channels,
+	    channel_map,
+            bus_map,
 	    transport_id,
 	    pool,
+            inbox,
 	    pipo_id
 	})
     }
 
     pub async fn connect(&mut self) -> anyhow::Result<()> {
 	loop {
-	let (client, mut irc_stream, mut input_buses)
+	let (client, mut irc_stream)
 	    = self.connect_irc().await?;
 
 	loop {
 	    // stupid sexy infinite loop
 	    tokio::select! {
-		Some((channel, message))
-		    = tokio_stream::StreamExt::next(&mut input_buses) => {
-			let message = message.unwrap();
+		Some(message)
+		    = self.inbox.next() => {
 			match message {
 			    Message::Action {
 				sender,
 				pipo_id: _,
 				transport,
+                                bus,
 				username,
 				avatar_url: _,
 				thread: _,
@@ -122,10 +123,10 @@ impl IRC {
 				attachments,
 				is_edit,
 				irc_flag,
-			    } => {
+			    } => if let Some(channel) = self.bus_map.get(&bus) {
 				if sender != self.transport_id {
 				    self.handle_action_message(&client,
-							       &channel,
+							       channel,
 							       transport,
 							       username,
 							       message,
@@ -133,47 +134,60 @@ impl IRC {
 							       is_edit,
 							       irc_flag);
 				}
-			    },
+			    }
+                            else {
+                                eprintln!("No channel for bus {}", bus.name);
+                            },
 			    Message::Bot {
 				sender,
 				pipo_id: _,
 				transport,
+                                bus,
 				message,
 				attachments,
 				is_edit,
-			    } => {
+			    } => if let Some(channel) = self.bus_map.get(&bus) {
 				if sender != self.transport_id {
 				    self.handle_bot_message(&client,
-							    &channel,
+							    channel,
 							    transport,
 							    message,
 							    attachments,
 							    is_edit);
 				}
-			    },
+			    }
+                            else {
+                                eprintln!("No channel for bus {}", bus.name);
+                            },
 			    Message::Delete {
 				sender: _,
 				pipo_id: _,
 				transport: _,
+                                bus: _,
 			    } => {
 				continue
 			    },
 			    Message::Names {
 				sender,
 				transport: _,
+                                bus,
 				username,
 				message,
-			    } => {
+			    } => if let Some(channel) = self.bus_map.get(&bus) {
 				if sender != self.transport_id {
 				    self.handle_names_message(&client,
-							      &channel,
+							      channel,
 							      username,
 							      message);
 				}
-			    },
+			    }
+                            else {
+                                eprintln!("No channel for bus {}", bus.name);
+                            },
 			    Message::Pin {
 				sender: _,
 				pipo_id: _,
+                                bus: _,
 				remove: _,
 			    } => {
 				continue
@@ -182,6 +196,7 @@ impl IRC {
 				sender: _,
 				pipo_id: _,
 				transport: _,
+                                bus: _,
 				emoji: _,
 				remove: _,
 				username: _,
@@ -194,6 +209,7 @@ impl IRC {
 				sender,
 				pipo_id: _,
 				transport,
+                                bus,
 				username,
 				avatar_url: _,
 				thread: _,
@@ -201,10 +217,10 @@ impl IRC {
 				attachments,
 				is_edit,
 				irc_flag,
-			    } => {
+			    } => if let Some(channel) = self.bus_map.get(&bus) {
 				if sender != self.transport_id {
 				    self.handle_text_message(&client,
-							     &channel,
+							     channel,
 							     transport,
 							     username,
 							     message,
@@ -212,7 +228,10 @@ impl IRC {
 							     is_edit,
 							     irc_flag);
 				}
-			    },
+			    }
+                            else {
+                                eprintln!("No channel for bus {}", bus.name);
+                            },
 			}
 		    }
 		Some(message)
@@ -304,26 +323,27 @@ impl IRC {
 	}
     }
 
-    fn handle_names_message(&self, client: &Client, channel: &str,
+    async fn handle_names_message(&self, client: &Client, channel: &str,
 			    username: String, message: Option<String>) {
 	if message == Some("/names".to_string()) {
 	    if let Some(users) = client.list_users(channel) {
 		let users: Vec<String> = users.into_iter().map(|user| {
 		    user.get_nickname().to_string()
 		}).collect();
-		let message = Message::Names {
-		    sender: self.transport_id,
-		    transport: TRANSPORT_NAME.to_string(),
-		    username: username.to_string(),
-		    message: Some(serde_json::json!(users).to_string()),
-		};
+                if let Some((bus, sender)) = self.channel_map.get(channel) {
+		    let message = Message::Names {
+		        sender: self.transport_id,
+		        transport: TRANSPORT_NAME.to_string(),
+                        bus: bus.as_ref().to_owned(),
+		        username: username.to_string(),
+		        message: Some(serde_json::json!(users).to_string()),
+		    };
 
-		if let Some(sender) = self.channels.get(channel) {
 		    eprintln!("Sending message: {:#}", message);
-		    if let Err(e) = sender.send(message) {
+		    if let Err(e) = sender.send(message).await {
 			eprintln!("Couldn't send message: {:#}", e);
 		    }
-		}
+                }
 	    }
 	}
     }
@@ -419,25 +439,21 @@ impl IRC {
 
     async fn connect_irc(&mut self)
 	-> anyhow::Result<(Client,
-			   irc::client::ClientStream,
-			   StreamMap<String,BroadcastStream<Message>>)> {
+			   irc::client::ClientStream)> {
 	    let mut client = Client::from_config(self.config.clone()).await?;
 
 	    client.send_cap_req(&[Capability::MultiPrefix])?;
 	    client.identify()?;
 
 	    let irc_stream = client.stream()?;
-	    let mut input_buses = StreamMap::new();
-	    for (channel_name, channel) in self.channels.iter() {
-		input_buses.insert(channel_name.clone(), 
-				   BroadcastStream::new(channel.subscribe()));
+	    for channel_name in self.channel_map.keys() {
 		if let Err(e) = client.send_join(channel_name) {
 		    eprintln!("Failed to join channel {}: {:#}", channel_name,
 			      e);
 		}
 	    }
 
-	    Ok((client, irc_stream, input_buses))
+	    Ok((client, irc_stream))
 	}
 
     async fn get_avatar_url(&self, nickname: &str) -> String {
@@ -462,7 +478,7 @@ impl IRC {
 			     nickname: String,
 			     channel: String,
 			     message: String) -> anyhow::Result<()> {
-	if let Some(sender) = self.channels.get(&channel) {
+	if let Some((bus, sender)) = self.channel_map.get(&channel) {
 	    lazy_static! {
 		static ref RE: Regex
 		    =  Regex::new("^\x01ACTION (.*)\x01\r?$").unwrap();
@@ -479,6 +495,7 @@ impl IRC {
 		    sender: self.transport_id,
 		    pipo_id,
 		    transport: TRANSPORT_NAME.to_string(),
+                    bus: bus.as_ref().to_owned(),
 		    username: nickname.clone(),
 		    avatar_url: Some(avatar_url),
 		    thread: None,
@@ -487,7 +504,7 @@ impl IRC {
 		    is_edit: false,
 		    irc_flag: false,
 		};
-		return match sender.send(message) {
+		return match sender.send(message).await {
 		    Ok(_) => Ok(()),
 		    Err(e) => Err(anyhow!("Couldn't send message: {:#}", e))
 		}
@@ -497,6 +514,7 @@ impl IRC {
 		    sender: self.transport_id,
 		    pipo_id,
 		    transport: TRANSPORT_NAME.to_string(),
+                    bus: bus.as_ref().to_owned(),
 		    username: nickname.clone(),
 		    avatar_url: Some(avatar_url),
 		    thread: None,
@@ -505,7 +523,7 @@ impl IRC {
 		    is_edit: false,
 		    irc_flag: false,
 		};
-		return match sender.send(message) {
+		return match sender.send(message).await {
 		    Ok(_) => Ok(()),
 		    Err(e) => Err(anyhow!("Couldn't send message: {:#}", e))
 		}
@@ -541,7 +559,7 @@ impl IRC {
 			   nickname: String,
 			   channel: String,
 			   message: String) -> anyhow::Result<()> {
-	if let Some(sender) = self.channels.get(&channel) {
+	if let Some((bus, sender)) = self.channel_map.get(&channel) {
 	    lazy_static! {
 		static ref RE: Regex
 		    =  Regex::new("^\x01ACTION (.*)\x01\r?$").unwrap();
@@ -557,6 +575,7 @@ impl IRC {
 		    sender: self.transport_id,
 		    pipo_id,
 		    transport: TRANSPORT_NAME.to_string(),
+                    bus: bus.as_ref().to_owned(),
 		    username: nickname.clone(),
 		    avatar_url: Some(avatar_url),
 		    thread: None,
@@ -565,7 +584,7 @@ impl IRC {
 		    is_edit: false,
 		    irc_flag: false,
 		};
-		return match sender.send(message) {
+		return match sender.send(message).await {
 		    Ok(_) => Ok(()),
 		    Err(e) => Err(anyhow!("Couldn't send message: {:#}", e))
 		}
@@ -575,6 +594,7 @@ impl IRC {
 		    sender: self.transport_id,
 		    pipo_id,
 		    transport: TRANSPORT_NAME.to_string(),
+                    bus: bus.as_ref().to_owned(),
 		    username: nickname.clone(),
 		    avatar_url: Some(avatar_url),
 		    thread: None,
@@ -584,7 +604,7 @@ impl IRC {
 		    is_edit: false,
 		    irc_flag: false,
 		};
-		return match sender.send(message) {
+		return match sender.send(message).await {
 		    Ok(_) => Ok(()),
 		    Err(e) => Err(anyhow!("Couldn't send message: {:#}", e))
 		}

@@ -13,9 +13,8 @@ use futures::{
     stream::{
 	SplitSink,
 	SplitStream,
-	StreamExt as FuturesStreamExt,
     },
-    SinkExt,
+    SinkExt, StreamExt,
 };
 use lazy_static::lazy_static;
 use regex::{
@@ -35,18 +34,16 @@ use rusqlite::params;
 use serde_json::Value;
 use tokio::{
     net::TcpStream,
-    sync::broadcast,
+    sync::mpsc,
 };
 use tokio_stream::{
-    wrappers::BroadcastStream,
-    StreamExt,
+    wrappers::ReceiverStream,
+    StreamExt as TokioStreamExt,
     StreamMap,
 };
 use tokio_tungstenite::*;
 
-use crate::{
-    Message,
-};
+use crate::{Message, Bus};
 
 pub mod objects;
 use objects::{
@@ -66,9 +63,11 @@ pub(crate) struct Slack {
     token: String,
     bot_token: String,
     pool: Pool,
+    inbox: ReceiverStream<Message>,
     pipo_id: Arc<Mutex<i64>>,
-    channels: HashMap<String,broadcast::Sender<Message>>,
-    channel_map: HashMap<String,String>,
+    bus_map: HashMap<Arc<Bus>,String>,
+    channel_map: HashMap<String,(Arc<Bus>,mpsc::Sender<Message>)>,
+    channel_id_map: HashMap<String,String>,
     id_map: HashMap<String,String>,
     users: HashMap<String,User>,
 }
@@ -85,26 +84,31 @@ struct WebSocket {
 
 impl Slack {
     pub async fn new(transport_id: usize,
-		     bus_map: &HashMap<String,broadcast::Sender<Message>>,
+                     inbox: mpsc::Receiver<Message>,
+		     bus_map: &HashMap<Arc<Bus>,(mpsc::Sender<Message>,mpsc::Receiver<Message>)>,
 		     pipo_id: Arc<Mutex<i64>>,
 		     pool: Pool,
 		     token: String,
 		     bot_token: String,
-		     channel_mapping: &HashMap<Arc<String>,Arc<String>>)
+		     channel_mapping: &HashMap<Arc<String>,Arc<Bus>>)
 	-> anyhow::Result<Slack>
     {
-	let channels = channel_mapping.iter()
-	    .filter_map(|(channelname, busname)| {
-		if let Some(sender) = bus_map.get(busname.as_ref()) {
-		    Some((channelname.as_ref().clone(), sender.clone()))
+	let channel_map: HashMap<String,(Arc<Bus>,mpsc::Sender<Message>)> = channel_mapping.iter()
+	    .filter_map(|(channelname, bus)| {
+		if let Some((sender, _)) = bus_map.get(bus.as_ref()) {
+		    Some((channelname.as_ref().clone(), (bus.clone(), sender.clone())))
 		}
 		else {
 		    eprintln!("No bus named '{}' in configuration file.",
-			      busname);
+			      bus.name);
 		    None
 		}
 	    }
 	    ).collect();
+        let bus_map = channel_map
+            .iter()
+            .map(|(x, (a, _))| (a.clone(), x.clone()))
+            .collect();
 
 	Ok(Slack {
 	    transport_id,
@@ -117,10 +121,12 @@ impl Slack {
 	    },
 	    token,
 	    bot_token,
-	    channels,
 	    pool,
+            inbox: ReceiverStream::new(inbox),
 	    pipo_id,
-	    channel_map: HashMap::new(),
+            bus_map,
+            channel_map,
+	    channel_id_map: HashMap::new(),
 	    id_map: HashMap::new(),
 	    users: HashMap::new(),
 	})
@@ -150,29 +156,22 @@ impl Slack {
 	    let name = format!("#{}", channel.get("name").unwrap().as_str()
 			       .unwrap());
 	    let id = channel.get("id").unwrap().as_str().unwrap().to_string();
-	    self.channel_map.insert(name.clone(), id.clone());
+	    self.channel_id_map.insert(name.clone(), id.clone());
 	    self.id_map.insert(id, name);
-	}
-
-	let mut input_buses = StreamMap::new();
-	
-	for (channel_name, channel) in self.channels.iter() {
-	    input_buses.insert(channel_name.clone(),
-			       BroadcastStream::new(channel.subscribe()));
 	}
 
 	self.get_users_list().await?;
 
 	loop {
 	    tokio::select! {
-		Some((channel, message))
-		    = StreamExt::next(&mut input_buses) => {
-			let message = message.unwrap();
+		Some(message)
+		    = TokioStreamExt::next(&mut self.inbox) => {
 			match message {
 			    Message::Action {
-				sender,
+				sender: _,
 				pipo_id,
 				transport,
+                                bus,
 				username,
 				avatar_url,
 				thread,
@@ -180,82 +179,90 @@ impl Slack {
 				attachments,
 				is_edit,
 				irc_flag: _,
-			    } => {
-				if sender != self.transport_id {
-				    if let Err(e)
-					= self.post_action_message(pipo_id,
-								   &channel,
-								   transport,
-								   username,
-								   avatar_url,
-								   thread,
-								   message,
-								   attachments,
-								   is_edit)
-					.await {
-					    eprintln!("Failed to post message:\
-						       {}", e);
-					}
-				}
-			    },
+			    } => if let Some(channel) = self.bus_map.get(&bus).cloned() {
+				if let Err(e)
+				    = self.post_action_message(pipo_id,
+							       &channel,
+							       transport,
+							       username,
+							       avatar_url,
+							       thread,
+							       message,
+							       attachments,
+							       is_edit)
+				    .await {
+					eprintln!("Failed to post message:\
+						   {}", e);
+				    }
+			    }
+                            else {
+                                eprintln!("No channel for bus {}", bus.name);
+                            },
 			    Message::Bot {
-				sender,
+				sender: _,
 				pipo_id: _,
+                                bus,
 				transport,
 				message,
 				attachments,
 				is_edit,
-			    } => {
-				if sender != self.transport_id {
-				    if let Err(e) 
-					= self.post_bot_message(&channel,
-								transport,
-								message,
-								attachments,
-								is_edit)
-					.await {
-					    eprintln!("Failed to post message:\
-						       {}", e);
-					}
+			    } => if let Some(channel) = self.bus_map.get(&bus).cloned() {
+				if let Err(e) 
+				= self.post_bot_message(&channel,
+							transport,
+							message,
+							attachments,
+							is_edit)
+				.await {
+				    eprintln!("Failed to post message:\
+					       {}", e);
 				}
-			    },
+			    }
+                            else {
+                                eprintln!("No channel for bus {}", bus.name);
+                            },
 			    Message::Delete {
-				sender,
+				sender: _,
 				pipo_id,
+                                bus,
 				transport: _,
-			    } => {
-				if sender != self.transport_id {
-				    if let Err(e)
-					= self.delete_message(pipo_id,
-							      &channel).await {
-					    eprintln!("Couldn't delete \
-						       message: {}", e);
-					}
-				}
-			    },
+			    } => if let Some(channel) = self.bus_map.get(&bus).cloned() {
+				if let Err(e)
+				    = self.delete_message(pipo_id,
+							  &channel).await {
+					eprintln!("Couldn't delete \
+						   message: {}", e);
+				    }
+			    }
+                            else {
+                                eprintln!("No channel for bus {}", bus.name);
+                            },
 			    Message::Names {
-				sender,
+				sender: _,
 				transport,
+                                bus,
 				username,
 				message,
-			    } => {
-				if sender != self.transport_id {
-				    if let Err(e)
-					= self.post_names_message(&channel,
-								  transport,
-								  username,
-								  message)
-					.await {
-					    eprintln!("Failed to post message:\
-						       {}", e);
-					}
-				}
-			    },
+			    } => if let Some(channel) = self.bus_map.get(&bus).cloned() {
+				if let Err(e)
+				    = self.post_names_message(&channel,
+							      transport,
+							      username,
+							      message)
+				    .await {
+					eprintln!("Failed to post message:\
+						   {}", e);
+				    }
+			    }
+                            else {
+                                eprintln!("No channel for bus {}", bus.name);
+                            },
 			    Message::Pin {
-				sender,
+				sender: _,
 				pipo_id,
+                                bus,
 				remove,
-			    } => if sender != self.transport_id {
+			    } => if let Some(channel) = self.bus_map.get(&bus).cloned() {
 				if !remove {
 				    if let Err(e) = self.pins_add(&channel,
 								  pipo_id)
@@ -272,17 +279,21 @@ impl Slack {
 						      e)
 					}
 				}
-			    },
+			    }
+                            else {
+                                eprintln!("No channel for bus {}", bus.name);
+                            },
 			    Message::Reaction {
-				sender,
+				sender: _,
 				pipo_id,
 				transport,
+                                bus,
 				emoji,
 				remove,
 				username,
 				avatar_url,
 				thread
-			    } => if sender != self.transport_id {
+			    } => if let Some(channel) = self.bus_map.get(&bus).cloned() {
 				if !remove {
 				    if let Err(e)
 					= self.add_reaction(pipo_id,
@@ -311,10 +322,14 @@ impl Slack {
 					}
 				}
 			    }
+                            else {
+                                eprintln!("No channel for bus {}", bus.name);
+                            },
 			    Message::Text {
-				sender,
+				sender: _,
 				pipo_id,
 				transport,
+                                bus,
 				username,
 				avatar_url,
 				thread,
@@ -322,24 +337,25 @@ impl Slack {
 				attachments,
 				is_edit,
 				irc_flag: _,
-			    } => {
-				if sender != self.transport_id {
-				    if let Err(e)
-					= self.post_text_message(pipo_id,
-								 &channel,
-								 transport,
-								 username,
-								 avatar_url,
-								 thread,
-								 message,
-								 attachments,
-								 is_edit)
-					.await {
-					    eprintln!("Failed to post message:\
-						       {}", e);
-					}
-				}
+			    } => if let Some(channel) = self.bus_map.get(&bus).cloned() {
+				if let Err(e)
+				    = self.post_text_message(pipo_id,
+							     &channel,
+							     transport,
+							     username,
+							     avatar_url,
+							     thread,
+							     message,
+							     attachments,
+							     is_edit)
+				    .await {
+					eprintln!("Failed to post message:\
+						   {}", e);
+				    }
 			    }
+                            else {
+                                eprintln!("No channel for bus {}", bus.name);
+                            }
 			}
 		    }
 		message
@@ -448,7 +464,7 @@ impl Slack {
 			  _thread: Option<(Option<String>, Option<u64>)>)
 	-> anyhow::Result<()> {
 	let mut headers = HeaderMap::new();
-	let channel = match self.channel_map.get(channel) {
+	let channel = match self.channel_id_map.get(channel) {
 	    Some(s) => s,
 	    None => return Err(anyhow!("Could not find id for channel {}",
 				       channel))
@@ -459,7 +475,7 @@ impl Slack {
 	};
 
 	let mut shortcode = None;
-	if let Some(emoji) = emojis::lookup(&emoji) {
+	if let Some(emoji) = emojis::get_by_shortcode(&emoji) {
 	    if let Some(s) = emoji.shortcode() {
 		shortcode = Some(s.to_string());
 	    }
@@ -501,7 +517,7 @@ impl Slack {
     async fn delete_message(&mut self, pipo_id: i64, channel: &str)
 	-> anyhow::Result<()> {
 	let mut headers = HeaderMap::new();
-	let channel = match self.channel_map.get(channel) {
+	let channel = match self.channel_id_map.get(channel) {
 	    Some(s) => s,
 	    None => return Err(anyhow!("Could not find id for channel {}",
 				       channel))
@@ -538,7 +554,7 @@ impl Slack {
     async fn pins_add(&mut self, channel: &str, pipo_id: i64)
 	-> anyhow::Result<()> {
 	let mut headers = HeaderMap::new();
-	let channel = match self.channel_map.get(channel) {
+	let channel = match self.channel_id_map.get(channel) {
 	    Some(s) => s,
 	    None => return Err(anyhow!("Could not find id for channel {}",
 				       channel))
@@ -578,7 +594,7 @@ impl Slack {
     async fn pins_remove(&mut self, channel: &str, pipo_id: i64)
 	-> anyhow::Result<()> {
 	let mut headers = HeaderMap::new();
-	let channel = match self.channel_map.get(channel) {
+	let channel = match self.channel_id_map.get(channel) {
 	    Some(s) => s,
 	    None => return Err(anyhow!("Could not find id for channel {}",
 				       channel))
@@ -647,7 +663,7 @@ impl Slack {
 	Err(anyhow!("slack.rs:Slack::post_bot_message() not yet implemented."))
     }
 
-    async fn post_names_message(&mut self, channel: &str, transport: String,
+    async fn post_names_message(&mut self, channel_id: &str, transport: String,
 				username: String, message: Option<String>)
 	-> anyhow::Result<()> {
 	let message = message.unwrap();
@@ -655,21 +671,26 @@ impl Slack {
 	    let users: Vec<String> = self.users.iter().map(|(user, _)| {
 		user.clone()
 	    }).collect();
+            let channel = match self.id_map.get(channel_id) {
+                Some(channel) => channel,
+                None => {
+                    return Err(anyhow!("Couldn't find channel for channel id: {}", channel_id));
+                }
+            };
+            let bus = match self.channel_map.get(channel).map(|(a, _)| a).cloned() {
+                Some(bus) => (*bus).clone(),
+                None => {
+                    return Err(anyhow!("No bus for channel {}", channel));
+                }
+            };
 	    let message = Message::Names {
 		sender: self.transport_id,
 		transport: TRANSPORT_NAME.to_string(),
-		username: username,
+                bus,
+		username,
 		message: Some(serde_json::json!(users).to_string()),
 	    };
-
-	    return match self.id_map.get(channel) {
-		Some(channel) => {
-		    let channel = channel.clone();
-		    self.send_message(&channel, message).await
-		},
-		None => Err(anyhow!("Couldn't find channel name for channel \
-				     id: {}", channel))
-	    }
+	    self.send_message(&(channel.clone()), message).await
 	}
 	else {
 	    let mut headers = HeaderMap::new();
@@ -730,7 +751,7 @@ impl Slack {
 		],
 	    }];
 	    let body = serde_json::json!({
-		"channel":channel,
+		"channel":channel_id,
 		"user":username,
 		"blocks":blocks,
 	    }).to_string();
@@ -789,7 +810,7 @@ impl Slack {
 			  attachments: Option<Vec<crate::Attachment>>)
 	-> anyhow::Result<()> {
 	let mut headers = HeaderMap::new();
-	let channel = match self.channel_map.get(channel) {
+	let channel = match self.channel_id_map.get(channel) {
 	    Some(s) => s.clone(),
 	    None => return Err(anyhow!("Could not find id for channel {}",
 				       channel))
@@ -850,7 +871,7 @@ impl Slack {
 			     _thread: Option<(Option<String>, Option<u64>)>)
 	-> anyhow::Result<()> {
 	let mut headers = HeaderMap::new();
-	let channel = match self.channel_map.get(channel) {
+	let channel = match self.channel_id_map.get(channel) {
 	    Some(s) => s,
 	    None => return Err(anyhow!("Could not find id for channel {}",
 				       channel))
@@ -894,7 +915,7 @@ impl Slack {
 		    _attachments: Option<Vec<crate::Attachment>>)
 	-> anyhow::Result<()> {
 	let mut headers = HeaderMap::new();
-	let channel = match self.channel_map.get(channel) {
+	let channel = match self.channel_id_map.get(channel) {
 	    Some(s) => s,
 	    None => return Err(anyhow!("Could not find id for channel {}",
 				       channel))
@@ -1178,17 +1199,19 @@ impl Slack {
 	match payload.command.as_str() {
 	    "/names" => {
 		if accepts_response {
+		    let channel = format!("#{}", payload.channel_name);
+                    let (bus, sender) = self.channel_map.get(&channel)
+                        .cloned()
+                        .ok_or(anyhow!("No bus for channel {}", channel))?;
 		    let message = Message::Names {
 			sender: self.transport_id,
 			transport: TRANSPORT_NAME.to_string(),
+                        bus: (*bus).clone(),
 			username: payload.user_name,
 			message: Some("/names".to_string()),
 		    };
-		    let channel = &format!("#{}", payload.channel_name);
-		    if let Some(sender) = self.channels.get(channel) {
-			if let Err(e) = sender.send(message) {
-			    eprintln!("Couldn't send message: {:#}", e);
-			}
+		    if let Err(e) = sender.send(message).await {
+			eprintln!("Couldn't send message: {:#}", e);
 		    }
 		}
 	    },
@@ -1378,12 +1401,17 @@ impl Slack {
 		=> Some(self.handle_attachments(attachments).await),
 	    None => None
 	};
+        let bus = self.channel_map.get(channel)
+            .map(|(a, _)| a)
+            .cloned()
+            .ok_or(anyhow!("No bus for channel {}", channel))?;
 	
 	let message = Message::Bot {
 	    sender: self.transport_id,
 	    pipo_id,
 	    transport: TRANSPORT_NAME.to_string(),
-	    message: message,
+            bus: (*bus).clone(),
+	    message,
 	    attachments,
 	    is_edit,
 	};
@@ -1461,6 +1489,10 @@ impl Slack {
 	    },
 	    None => return Err(anyhow!("Message has no timestamp."))
 	};
+        let bus = (*(self.channel_map.get(channel)
+            .map(|(a, _)| a)
+            .cloned()
+            .ok_or(anyhow!("No bus for channel {channel}"))?)).clone();
 	let user = self.get_user_info(&user.ok_or_else(|| {
 	    anyhow!("No user ID in message.")
 	})?).await?;
@@ -1470,10 +1502,11 @@ impl Slack {
 	    sender: self.transport_id,
 	    pipo_id,
 	    transport: TRANSPORT_NAME.to_string(),
+            bus,
 	    username,
 	    avatar_url,
 	    thread: None,
-	    message: message,
+	    message,
 	    attachments: None,
 	    is_edit,
 	    irc_flag,
@@ -1493,7 +1526,7 @@ impl Slack {
 	}
 
 	let msg = *message.unwrap();
-	let channel = match self.channel_map.get(channel) {
+	let channel = match self.channel_id_map.get(channel) {
 	    Some(s) => s,
 	    None => return Err(anyhow!("Could not find id for channel {}",
 				       channel))
@@ -1561,10 +1594,12 @@ impl Slack {
 	    },
 	    None => return Err(anyhow!("Message has no timestamp."))
 	};
+        let bus = self.get_bus(channel)?.to_owned();
 	
 	let message = Message::Delete {
 	    sender: self.transport_id,
 	    pipo_id,
+            bus,
 	    transport: TRANSPORT_NAME.to_string(),
 	};
 
@@ -1715,6 +1750,7 @@ impl Slack {
 	    },
 	    None => return Err(anyhow!("Message has no timestamp."))
 	};
+        let bus = self.get_bus(channel)?.to_owned();
 	let user = self.get_user_info(&user.ok_or_else(|| {
 	    anyhow!("No user ID in message.")
 	})?).await?;
@@ -1731,10 +1767,11 @@ impl Slack {
 		pipo_id,
 		sender: self.transport_id,
 		transport: TRANSPORT_NAME.to_string(),
+                bus,
 		username,
 		avatar_url,
 		thread,
-		message: message,
+		message,
 		attachments,
 		is_edit,
 		irc_flag,
@@ -1786,7 +1823,7 @@ impl Slack {
 							name for channel_id: \
 							{}", channel))
 		    };
-		let pipo_id = match ts {
+		    let pipo_id = match ts {
 			Some(ts) => match self.select_id_from_messages(&ts)
 			    .await {
 				Some(id) => id,
@@ -1799,10 +1836,12 @@ impl Slack {
 			    return Err(anyhow!("Pinned item has no \
 						timestamp."))
 		    };
+                    let bus = self.get_bus(&channel)?.to_owned();
 
 		    let message = Message::Pin {
 			sender: self.transport_id,
 			pipo_id,
+                        bus,
 			remove,
 		    };
 		    
@@ -1858,11 +1897,13 @@ impl Slack {
 		    },
 		    None => return Err(anyhow!("Reaction has no timestamp."))
 		};
+                let bus = self.get_bus(&channel)?.to_owned();
 
 		let message = Message::Reaction {
 		    sender: self.transport_id,
 		    pipo_id,
 		    transport: TRANSPORT_NAME.to_string(),
+                    bus,
 		    emoji: reaction,
 		    remove,
 		    username: user,
@@ -2021,18 +2062,13 @@ impl Slack {
     }
 
     async fn send_message(&mut self, channel: &str, message: Message)
-	-> anyhow::Result<()> {
-	match self.channels.get(channel) {
-	    Some(bus) => {
-		if let Err(e) = bus.send(message) {
-		    return Err(anyhow!("Couldn't send message to channel {}: \
-					{:#}", channel, e))
-		}
-	    },
-	    None => return Err(anyhow!("No bus for channel {}", channel))
-	}
-
-	Ok(())
+	                  -> anyhow::Result<()> {
+        self.channel_map.get(channel)
+            .map(|(_, b)| b)
+            .ok_or(anyhow!("No bus for channel {}", channel))?
+            .send(message)
+            .await
+            .map_err(|e| anyhow!("Couldn't send message to channel {channel}: {e:#}"))
     }
 
     #[allow(dead_code)]
@@ -2369,5 +2405,11 @@ impl Slack {
 	    }
 	}
 	text
+    }
+
+    fn get_bus(&self, channel: &str) -> anyhow::Result<&Bus> {
+        self.channel_map.get(channel)
+            .map(|(a, _)| &**a)
+            .ok_or(anyhow!("No bus for channel {channel}"))
     }
 }

@@ -36,18 +36,12 @@ use serenity::{
     utils::MessageBuilder,
 };
 use tokio::sync::{
-    broadcast,
-    Mutex as AsyncMutex
+    Mutex as AsyncMutex,
+    mpsc
 };
-use tokio_stream::{
-    wrappers::BroadcastStream,
-    StreamExt,
-    StreamMap,
-};
+use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
-use crate::{
-    Message,
-};
+use crate::{Message, Bus};
 
 
 const TRANSPORT_NAME: &'static str = "Discord";
@@ -60,6 +54,7 @@ pub(crate) struct Discord {
     guild: GuildId,
     shared: Arc<Shared>,
     pool: Pool,
+    inbox: ReceiverStream<Message>,
     pipo_id: Arc<Mutex<i64>>,
     cache_http: Option<Arc<dyn CacheHttp>>
 }
@@ -77,7 +72,7 @@ struct RealHandler {
 
 #[derive(Clone)]
 struct HandlerChannel {
-    sender: broadcast::Sender<Message>,
+    sender: mpsc::Sender<Message>,
     webhook: Option<u64>
 }
 
@@ -87,6 +82,8 @@ struct Shared {
 
 struct State {
     channels: HashMap<u64,HandlerChannel>,
+    channel_mapping: HashMap<ChannelId,Bus>,
+    bus_mapping: HashMap<Bus,ChannelId>,
     emojis: HashMap<String,Emoji>,
     threads: HashMap<u64,u64>,
     pins: HashSet<MessageId>
@@ -165,7 +162,7 @@ impl Shared {
     }
 
     fn get_sender<C: AsRef<ChannelId>>(&self, channel: C)
-	-> Option<broadcast::Sender<Message>> {
+	-> Option<mpsc::Sender<Message>> {
 	let state = self.state.lock().unwrap();
 	state.channels.get(channel.as_ref().as_u64()).map(|c| c.sender.clone())
     }
@@ -181,6 +178,16 @@ impl Shared {
 	let mut state = self.state.lock().unwrap();
 	state.channels.get_mut(channel.as_ref().as_u64())
 	    .map(|c| c.webhook = Some(*webhook.as_ref().as_u64()));
+    }
+
+    fn get_bus(&self, channel: &ChannelId) -> Option<Bus> {
+        let state = self.state.lock().unwrap();
+        state.channel_mapping.get(channel).cloned()
+    }
+
+    fn get_channel_for_bus(&self, bus: &Bus) -> Option<ChannelId> {
+        let state = self.state.lock().unwrap();
+        state.bus_mapping.get(bus).cloned()
     }
 }
 
@@ -213,53 +220,57 @@ impl RealHandler {
 	    .collect();
 	let old_pins = self.shared.get_pins();
 
-	for message in old_pins.difference(&new_pins) {
-	    let pipo_id = match self.select_id_from_messages(message).await {
-		Ok(id) => id,
-		Err(e) => {
-		    eprintln!("Couldn't retrieve  pipo_id for MessageId {:#}: \
-			       {}", message, e);
+        if let Some(bus) = self.shared.get_bus(&channel_id) {
+	    for message in old_pins.difference(&new_pins) {
+	        let pipo_id = match self.select_id_from_messages(message).await {
+		    Ok(id) => id,
+		    Err(e) => {
+		        eprintln!("Couldn't retrieve  pipo_id for MessageId {:#}: \
+			           {}", message, e);
 
-		    continue
-		}
-	    };
+		        continue
+		    }
+	        };
 
-	    let message = Message::Pin {
-		sender: self.transport_id,
-		pipo_id,
-		remove: true,
-	    };
+	        let message = Message::Pin {
+		    sender: self.transport_id,
+		    pipo_id,
+                    bus: bus.to_owned(),
+		    remove: true,
+	        };
 
-	    eprintln!("Discord: Removing pin...");
+	        eprintln!("Discord: Removing pin...");
 
-	    if let Err(e) = sender.send(message) {
-		eprintln!("Failed to send message: {}", e);
+	        if let Err(e) = sender.send(message).await {
+		    eprintln!("Failed to send message: {}", e);
+	        }
 	    }
-	}
 
-	for message in new_pins.difference(&old_pins) {
-	    let pipo_id = match self.select_id_from_messages(message).await {
-		Ok(id) => id,
-		Err(e) => {
-		    eprintln!("Couldn't retrieve  pipo_id for MessageId {:#}: \
-			       {}", message, e);
+	    for message in new_pins.difference(&old_pins) {
+	        let pipo_id = match self.select_id_from_messages(message).await {
+		    Ok(id) => id,
+		    Err(e) => {
+		        eprintln!("Couldn't retrieve  pipo_id for MessageId {:#}: \
+			           {}", message, e);
 
-		    continue
-		}
-	    };
+		        continue
+		    }
+	        };
 
-	    let message = Message::Pin {
-		sender: self.transport_id,
-		pipo_id,
-		remove: false,
-	    };
+	        let message = Message::Pin {
+		    sender: self.transport_id,
+		    pipo_id,
+                    bus: bus.to_owned(),
+		    remove: false,
+	        };
 
-	    eprintln!("Discord: Adding pin...");
+	        eprintln!("Discord: Adding pin...");
 
-	    if let Err(e) = sender.send(message) {
-		eprintln!("Failed to send message: {}", e);
+	        if let Err(e) = sender.send(message).await {
+		    eprintln!("Failed to send message: {}", e);
+	        }
 	    }
-	}
+        }
 
 	self.shared.set_pins(new_pins);
     }
@@ -435,44 +446,51 @@ impl RealHandler {
 		0 => None,
 		_ => Some(attachments)
 	    };
-	    
-	    let message = if let Some(captures)
-		= RE.captures(&content) {
-		    content = match captures.get(1) {
-			Some(c) => c.as_str(),
-			None => "",
-		    }.to_string();
-		    Message::Action {
-			sender: self.transport_id,
-			pipo_id,
-			transport: TRANSPORT_NAME.to_string(),
-			username: msg.author.name.clone(),
-			avatar_url: msg.author.avatar_url(),
-			thread,
-			message: Some(content),
-			attachments,
-			is_edit: false,
-			irc_flag: false
-		    }
-		}
-	    else {
-		Message::Text {
-		    sender: self.transport_id,
-		    pipo_id,
-		    transport: TRANSPORT_NAME.to_string(),
-		    username: msg.author.name.clone(),
-		    avatar_url: msg.author.avatar_url(),
-		    thread,
-		    message: Some(content),
-		    attachments,
-		    is_edit: false,
-		    irc_flag: false,
-		}
-	    };
 
-	    if let Err(e) = sender.send(message) {
-		eprintln!("Couldn't send message {:#}", e);
-	    }
+            if let Some(bus) = self.shared.get_bus(&channel_id) {
+	        let message = if let Some(captures)
+		    = RE.captures(&content) {
+		        content = match captures.get(1) {
+			    Some(c) => c.as_str(),
+			    None => "",
+		        }.to_string();
+		        Message::Action {
+			    sender: self.transport_id,
+			    pipo_id,
+			    transport: TRANSPORT_NAME.to_string(),
+                            bus: bus.to_owned(),
+			    username: msg.author.name.clone(),
+			    avatar_url: msg.author.avatar_url(),
+			    thread,
+			    message: Some(content),
+			    attachments,
+			    is_edit: false,
+			    irc_flag: false
+		        }
+		    }
+	        else {
+		    Message::Text {
+		        sender: self.transport_id,
+		        pipo_id,
+		        transport: TRANSPORT_NAME.to_string(),
+                        bus: bus.to_owned(),
+		        username: msg.author.name.clone(),
+		        avatar_url: msg.author.avatar_url(),
+		        thread,
+		        message: Some(content),
+		        attachments,
+		        is_edit: false,
+		        irc_flag: false,
+		    }
+	        };
+
+	        if let Err(e) = sender.send(message).await {
+		    eprintln!("Couldn't send message {:#}", e);
+	        }
+            }
+            else {
+                eprintln!("No bus for channel {channel_id}");
+            }
 	}
     }
 
@@ -496,7 +514,7 @@ impl RealHandler {
 		None => return
 	    };
 
-	    self.delete_message(message_id, &sender).await;
+	    self.delete_message(&channel_id, message_id, &sender).await;
 	}
     }
 
@@ -522,7 +540,7 @@ impl RealHandler {
 	    };
 
 	    for message_id in message_ids {
-		self.delete_message(message_id, &sender).await;
+		self.delete_message(&channel_id, message_id, &sender).await;
 	    }
 	}
     }
@@ -593,44 +611,51 @@ impl RealHandler {
 						.proxy_url));
 		}
 	    }
-	    
-	    let message = if let Some(captures)
-		= RE.captures(&content) {
-		    content = match captures.get(1) {
-			Some(c) => c.as_str(),
-			None => "",
-		    }.to_string();
-		    Message::Action {
-			sender: self.transport_id,
-			pipo_id,
-			transport: TRANSPORT_NAME.to_string(),
-			username: author.name.clone(),
-			avatar_url: author.avatar_url(),
-			thread,
-			message: Some(content),
-			attachments: None,
-			is_edit: true,
-			irc_flag: true,
-		    }
-		}
-	    else {
-		Message::Text {
-		    sender: self.transport_id,
-		    pipo_id,
-		    transport: TRANSPORT_NAME.to_string(),
-		    username: author.name.clone(),
-		    avatar_url: author.avatar_url(),
-		    thread,
-		    message: Some(content),
-		    attachments: None,
-		    is_edit: true,
-		    irc_flag: true,
-		}
-	    };
 
-	    if let Err(e) = sender.send(message) {
-		eprintln!("Couldn't send message {:#}", e);
-	    }
+            if let Some(bus) = self.shared.get_bus(&channel_id) {
+	        let message = if let Some(captures)
+		    = RE.captures(&content) {
+		        content = match captures.get(1) {
+			    Some(c) => c.as_str(),
+			    None => "",
+		        }.to_string();
+		        Message::Action {
+			    sender: self.transport_id,
+			    pipo_id,
+			    transport: TRANSPORT_NAME.to_string(),
+                            bus: bus.to_owned(),
+			    username: author.name.clone(),
+			    avatar_url: author.avatar_url(),
+			    thread,
+			    message: Some(content),
+			    attachments: None,
+			    is_edit: true,
+			    irc_flag: true,
+		        }
+		    }
+	        else {
+		    Message::Text {
+		        sender: self.transport_id,
+		        pipo_id,
+		        transport: TRANSPORT_NAME.to_string(),
+                        bus: bus.to_owned(),
+		        username: author.name.clone(),
+		        avatar_url: author.avatar_url(),
+		        thread,
+		        message: Some(content),
+		        attachments: None,
+		        is_edit: true,
+		        irc_flag: true,
+		    }
+	        };
+
+	        if let Err(e) = sender.send(message).await {
+		    eprintln!("Couldn't send message {:#}", e);
+	        }
+            }
+            else {
+                eprintln!("No bus for channel {channel_id}");
+            }
 	}
     }
 
@@ -711,22 +736,28 @@ impl RealHandler {
 		_ => None
 	    };
 
-	    if let Some(emoji) = emoji {
-		let message = Message::Reaction {
-		    sender: self.transport_id,
-		    pipo_id,
-		    transport: TRANSPORT_NAME.to_string(),
-		    emoji,
-		    remove: false,
-		    username,
-		    avatar_url,
-		    thread
-		};
+            if let Some(bus) = self.shared.get_bus(&channel_id) {
+	        if let Some(emoji) = emoji {
+		    let message = Message::Reaction {
+		        sender: self.transport_id,
+		        pipo_id,
+		        transport: TRANSPORT_NAME.to_string(),
+                        bus: bus.to_owned(),
+		        emoji,
+		        remove: false,
+		        username,
+		        avatar_url,
+		        thread
+		    };
 
-		if let Err(e) = sender.send(message) {
-		    eprintln!("Couldn't send message {:#}", e);
-		}
+		    if let Err(e) = sender.send(message).await {
+		        eprintln!("Couldn't send message {:#}", e);
+		    }
+                }
 	    }
+            else {
+                eprintln!("No bus for channel {channel_id}");
+            }
 	}
     }
 
@@ -785,22 +816,28 @@ impl RealHandler {
 		_ => None
 	    };
 
-	    if let Some(emoji) = emoji {
-		let message = Message::Reaction {
-		    sender: self.transport_id,
-		    pipo_id,
-		    transport: TRANSPORT_NAME.to_string(),
-		    emoji,
-		    remove: true,
-		    username,
-		    avatar_url,
-		    thread
-		};
+            if let Some(bus) = self.shared.get_bus(&channel_id) {
+	        if let Some(emoji) = emoji {
+		    let message = Message::Reaction {
+		        sender: self.transport_id,
+		        pipo_id,
+		        transport: TRANSPORT_NAME.to_string(),
+                        bus: bus.to_owned(),
+		        emoji,
+		        remove: true,
+		        username,
+		        avatar_url,
+		        thread
+		    };
 
-		if let Err(e) = sender.send(message) {
-		    eprintln!("Couldn't send message {:#}", e);
-		}
-	    }
+		    if let Err(e) = sender.send(message).await {
+		        eprintln!("Couldn't send message {:#}", e);
+		    }
+	        }
+            }
+            else {
+                eprintln!("No bus for channel {channel_id}");
+            }
 	}
     }
 
@@ -857,7 +894,7 @@ impl RealHandler {
     async fn get_sender_and_thread(&self, channel_id: ChannelId,
 				   thread: &mut Option<(Option<String>,
 							Option<u64>)>)
-	-> Option<broadcast::Sender<Message>> {
+	-> Option<mpsc::Sender<Message>> {
 	if let Some(sender) = self.shared.get_sender(channel_id) {
 	    return Some(sender)
 	}
@@ -871,8 +908,8 @@ impl RealHandler {
 	}
     }
 
-    async fn delete_message(&self, message_id: MessageId,
-			    sender: &broadcast::Sender<Message>) {
+    async fn delete_message(&self, channel_id: &ChannelId, message_id: MessageId,
+			    sender: &mpsc::Sender<Message>) {
 	let pipo_id = match self.select_id_from_messages(message_id).await {
 	    Ok(id) => id,
 	    Err(e) => {
@@ -881,15 +918,20 @@ impl RealHandler {
 		return
 	    }
 	};
-	let message = Message::Delete {
-	    sender: self.transport_id,
-	    pipo_id,
-	    transport: TRANSPORT_NAME.to_string()
-	};
-
-	if let Err(e) = sender.send(message) {
-	    eprintln!("Couldn't send message {:#}", e);
-	}
+        if let Some(bus) = self.shared.get_bus(channel_id) {
+	    let message = Message::Delete {
+	        sender: self.transport_id,
+	        pipo_id,
+	        transport: TRANSPORT_NAME.to_string(),
+                bus: bus.to_owned(),
+	    };
+	    if let Err(e) = sender.send(message).await {
+	        eprintln!("Couldn't send message {:#}", e);
+	    }
+        }
+        else {
+            eprintln!("No bus for channel {}", channel_id);
+        }
     }
 
     pub async fn parse_content(&self,
@@ -1292,16 +1334,18 @@ impl EventHandler for Handler {
 
 impl Discord {
     pub async fn new(transport_id: usize,
-		     bus_map: &HashMap<String,broadcast::Sender<Message>>,
+                     inbox: mpsc::Receiver<Message>,
+		     bus_map: &HashMap<Arc<Bus>,(mpsc::Sender<Message>,mpsc::Receiver<Message>)>,
 		     pipo_id: Arc<Mutex<i64>>,
 		     pool: Pool,
 		     token: String,
 		     guild_id: u64,
-		     channel_mapping: &HashMap<Arc<String>,Arc<String>>)
-	-> anyhow::Result<Discord> {
+		     channel_mapping: &HashMap<Arc<String>,Arc<Bus>>)
+	             -> anyhow::Result<Discord> {
+        let inbox = ReceiverStream::new(inbox);
 	let channels = channel_mapping.iter()
-	    .filter_map(|(channelname, busname)| {
-		if let Some(sender) = bus_map.get(busname.as_ref()) {
+	    .filter_map(|(channelname, bus)| {
+		if let Some((sender, _)) = bus_map.get(bus.as_ref()) {
 		    Some((channelname.parse::<u64>().unwrap(),
 			  HandlerChannel {
 			      sender: sender.clone(),
@@ -1309,19 +1353,29 @@ impl Discord {
 			  }))
 		}
 		else {
-		    eprintln!("No bus named '{}' in configuration file.",
-			      busname);
+		    eprintln!("No bus named '{}' in configuration file.", bus.name);
 		    None
 		}
 	    }
 	    ).collect();
+        let mut new_map = HashMap::new();
+        for (k, v) in channel_mapping.iter() {
+            new_map.insert(unwrap_channel(k)?, (**v).clone());
+        }
+        let channel_mapping = new_map;
+        let bus_mapping = channel_mapping
+            .iter()
+            .map(|(k, v)| (v.to_owned(), k.to_owned()))
+            .collect();
 
 	let shared = Arc::new(Shared {
 	    state: Mutex::new(State {
 		channels,
 		emojis: HashMap::new(),
 		threads: HashMap::new(),
-		pins: HashSet::new()
+		pins: HashSet::new(),
+                channel_mapping,
+                bus_mapping,
 	    })
 	});
 		
@@ -1331,23 +1385,12 @@ impl Discord {
 	    guild: GuildId::from(guild_id),
 	    shared,
 	    pipo_id,
+            inbox,
 	    pool,
 	    cache_http: None
 	})
     }
 
-    fn create_input_buses(&self) -> StreamMap<u64,BroadcastStream<Message>> {
-	let state = self.shared.state.lock().unwrap();
-	let mut input_buses = StreamMap::new();
-
-	for (id, channel) in state.channels.iter() {
-	    input_buses.insert(*id, BroadcastStream::new(channel.sender
-							 .subscribe()));
-	}
-
-	input_buses
-    }
-    
     async fn update_messages_table<T: AsRef<MessageId>>(&self, pipo_id: i64,
 							message_id: T)
 	-> anyhow::Result<()> {
@@ -1617,7 +1660,7 @@ impl Discord {
 				     emoji: String, remove: bool)
 	-> anyhow::Result<()> {
 	let http = self.cache_http.as_ref().unwrap().http();
-	let emoji = match emojis::lookup(&emoji) {
+	let emoji = match emojis::get_by_shortcode(&emoji) {
 	    Some(e) => ReactionType::Unicode(e.as_str().to_string()),
 	    None => match self.find_emoji(http, &emoji).await? {
 		Some(e) => ReactionType::from(e),
@@ -1769,7 +1812,6 @@ impl Discord {
     }
     
     pub async fn connect(&mut self) -> anyhow::Result<()> {
-	let mut input_buses = self.create_input_buses();
 	let handler = Handler { real_handler: AsyncMutex::new(RealHandler {
 	    transport_id: self.transport_id,
 	    shared: self.shared.clone(),
@@ -1793,17 +1835,15 @@ impl Discord {
 
 	loop {
 	    tokio::select! {
-		stream = StreamExt::next(&mut input_buses) => {
+		stream = self.inbox.next() => {
 		    match stream {
-			Some((channel, message)) => {
-			    let message = message.unwrap();
-			    let channel_id = ChannelId(channel);
-			    
+			Some(message) => {
 			    match message {
 				Message::Action {
-				    sender,
+				    sender: _,
 				    pipo_id,
 				    transport,
+                                    bus,
 				    username,
 				    avatar_url,
 				    thread: _,
@@ -1811,27 +1851,31 @@ impl Discord {
 				    attachments: _,
 				    is_edit,
 				    irc_flag: _,
-				}=> {
-				    if sender != self.transport_id {
-					if let Err(e) = self
+				}=> match self.shared.get_channel_for_bus(&bus) {
+                                    Some(channel_id) => {
+				        if let Err(e) = self
 					    .handle_action_message(channel_id,
-								   pipo_id,
-								   transport,
-								   username,
-								   avatar_url,
-								   message,
-								   is_edit)
-					.await {
-					    eprintln!("Error handling \
-						       Message::Action: \
-						       {}", e);
-					}
-				    }
+							           pipo_id,
+							           transport,
+							           username,
+							           avatar_url,
+							           message,
+							           is_edit)
+					    .await {
+					        eprintln!("Error handling \
+						           Message::Action: \
+						           {}", e);
+					    }
+                                    },
+                                    None => {
+                                        eprintln!("No channel for bus {}", bus.name);
+                                    }
 				},
 				Message::Bot {
 				    sender: _,
 				    pipo_id: _,
 				    transport: _,
+                                    bus: _,
 				    message: _,
 				    attachments: _,
 				    is_edit: _,
@@ -1839,11 +1883,12 @@ impl Discord {
 				    continue
 				},
 				Message::Delete {
-				    sender,
+				    sender: _,
 				    pipo_id,
 				    transport: _,
-				} => {
-				    if sender != self.transport_id {
+                                    bus,
+				} => match self.shared.get_channel_for_bus(&bus) {
+                                    Some(channel_id) => {
 					if let Err(e)
 					    = self
 					    .handle_delete_message(channel_id,
@@ -1853,57 +1898,68 @@ impl Discord {
 							   Message::Delete: \
 							   {}", e);
 					    }
-				    }
+                                    }
+                                    None => {
+                                        eprintln!("No channel for bus {}", bus.name);
+                                    }
 				},
 				Message::Names {
 				    sender: _,
 				    transport: _,
+                                    bus: _,
 				    username: _,
 				    message: _,
 				} => {
 				    continue
 				},
 				Message::Pin {
-				    sender,
+				    sender: _,
 				    pipo_id,
+                                    bus,
 				    remove,
-				} => if sender != self.transport_id {
-				    if let Err(e) = self
+				} => match self.shared.get_channel_for_bus(&bus) {
+                                    Some(channel_id) => if let Err(e) = self
 					.handle_pin_message(channel_id,
-							     pipo_id,
-							     remove).await {
+							    pipo_id,
+							    remove).await {
 					    eprintln!("Error handling \
 						       Message::Pin: {}", e);
-					}
+					},
+                                    None => {
+                                        eprintln!("No channel for bus {}", bus.name);
+                                    }
 				},
 				Message::Reaction {
-				    sender,
+				    sender: _,
 				    pipo_id,
 				    transport: _,
+                                    bus,
 				    emoji,
 				    remove,
 				    username: _,
 				    avatar_url: _,
 				    thread: _,
-				} => {
-				    if sender != self.transport_id {
-					if let Err(e) =
-					    self
-					    .handle_reaction_message(channel_id,
-								     pipo_id,
-								     emoji,
-								     remove)
-					    .await {
-						eprintln!("Error handling \
-							   Message::Reaction: \
-							   {}", e);
-					    }
+				} => match self.shared.get_channel_for_bus(&bus) {
+                                    Some(channel_id) => if let Err(e) =
+					self
+					.handle_reaction_message(channel_id,
+								 pipo_id,
+								 emoji,
+								 remove)
+					.await {
+					    eprintln!("Error handling \
+						       Message::Reaction: \
+						       {}", e);
+					},
+                                    None => {
+                                        eprintln!("No channel for bus {}", bus.name);
 				    }
 				},
 				Message::Text {
-				    sender,
+				    sender: _,
 				    pipo_id,
 				    transport,
+                                    bus,
 				    username,
 				    avatar_url,
 				    thread,
@@ -1911,23 +1967,24 @@ impl Discord {
 				    attachments,
 				    is_edit,
 				    irc_flag: _,
-				} => {
-				    if sender != self.transport_id {
-					if let Err(e) = self
-					    .handle_text_message(channel_id,
-								 pipo_id,
-								 transport,
-								 username,
-								 avatar_url,
-								 thread,
-								 message,
-								 attachments,
-								 is_edit)
+				} => match self.shared.get_channel_for_bus(&bus) {
+				    Some(channel_id) => if let Err(e) = self
+					.handle_text_message(channel_id,
+							     pipo_id,
+							     transport,
+							     username,
+							     avatar_url,
+							     thread,
+							     message,
+							     attachments,
+							     is_edit)
 					.await {
 					    eprintln!("Error handling \
 						       Message::Text: \
 						       {}", e);
-					}
+					},
+                                    None => {
+                                        eprintln!("No channel for bus {}", bus.name);
 				    }
 				},
 			    }
@@ -1940,3 +1997,8 @@ impl Discord {
 	Err(anyhow!("ups"))
     }
 }
+
+fn unwrap_channel(channel: &str) -> anyhow::Result<ChannelId> {
+    channel.parse().map(|x| ChannelId(x)).map_err(|_| anyhow!("Invalid channel ID: {}", channel))
+}
+

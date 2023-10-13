@@ -1,6 +1,17 @@
-use std::time::SystemTime;
+use std::{time::SystemTime, sync::Arc, fmt::{Display, Formatter, self}};
 
-use rustls::{client::{ServerCertVerifier, ServerCertVerified}, ServerName, Certificate, Error};
+use rustls::{client::{ServerCertVerifier, ServerCertVerified}, ServerName, Certificate, CertificateError, Error};
+
+#[derive(Debug)]
+struct DoesNotMatch;
+
+impl Display for DoesNotMatch {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid peer certificate: does not match certificate loaded from server_cert file")
+    }
+}
+
+impl std::error::Error for DoesNotMatch {}
 
 pub struct MumbleCertVerifier {
     cert: Certificate
@@ -25,9 +36,8 @@ impl ServerCertVerifier for MumbleCertVerifier {
             Ok(ServerCertVerified::assertion())
         }
         else {
-            let error = String::from("invalid peer certificate: does not match certificate loaded from server_cert file");
-
-            Err(Error::InvalidCertificateData(error))
+            let error = Arc::new(DoesNotMatch);
+            Err(Error::InvalidCertificate(CertificateError::Other(error)))
         }
     }
 }

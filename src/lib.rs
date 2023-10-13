@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     env,
     fmt,
-    sync::{Arc, Mutex}, os,
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{
@@ -17,7 +17,7 @@ use serde_json;
 use tokio::{
     io::AsyncReadExt,
     fs::File,
-    sync::broadcast,
+    sync::mpsc,
 };
 
 mod irc;
@@ -35,12 +35,19 @@ use crate::rachni::Rachni;
 
 pub use crate::slack::objects;
 
+#[derive(Clone, Eq, Debug, Hash, PartialEq)]
+struct Bus {
+    id: u64,
+    name: String,
+}
+
 #[derive(Clone, Debug)]
 enum Message {
     Action {
 	sender: usize,
 	pipo_id: i64,
 	transport: String,
+        bus: Bus,
 	username: String,
 	avatar_url: Option<String>,
 	thread: Option<(Option<String>, Option<u64>)>,
@@ -53,6 +60,7 @@ enum Message {
 	sender: usize,
 	pipo_id: i64,
 	transport: String,
+        bus: Bus,
 	message: Option<String>,
 	attachments: Option<Vec<Attachment>>,
 	is_edit: bool,
@@ -61,22 +69,26 @@ enum Message {
 	sender: usize,
 	pipo_id: i64,
 	transport: String,
+        bus: Bus,
     },
     Names {
 	sender: usize,
 	transport: String,
+        bus: Bus,
 	username: String,
 	message: Option<String>,
     },
     Pin {
 	sender: usize,
 	pipo_id: i64,
+        bus: Bus,
 	remove: bool,
     },
     Reaction {
 	sender: usize,
 	pipo_id: i64,
 	transport: String,
+        bus: Bus,
 	emoji: String,
 	remove: bool,
 	username: Option<String>,
@@ -87,6 +99,7 @@ enum Message {
 	sender: usize,
 	pipo_id: i64,
 	transport: String,
+        bus: Bus,
 	username: String,
 	avatar_url: Option<String>,
 	thread: Option<(Option<String>, Option<u64>)>,
@@ -129,6 +142,7 @@ impl fmt::Display for Message {
 		sender: _,
 		pipo_id: _,
 		transport: _,
+                bus: _,
 		username: _,
 		avatar_url: _,
 		thread: _,
@@ -144,6 +158,7 @@ impl fmt::Display for Message {
 		sender: _,
 		pipo_id: _,
 		transport: _,
+                bus: _,
 		message,
 		attachments: _,
 		is_edit: _,
@@ -155,10 +170,12 @@ impl fmt::Display for Message {
 		sender: _,
 		pipo_id: _,
 		transport: _,
+                bus: _,
 	    } => write!(f, "Delete message"),
 	    Message::Names {
 		sender: _,
 		transport: _,
+                bus: _,
 		username: _,
 		message,
 	    } => match message {
@@ -168,12 +185,14 @@ impl fmt::Display for Message {
 	    Message::Pin {
 		sender: _,
 		pipo_id: _,
+                bus: _,
 		remove: _,
 	    } => write!(f, "Pin message"),
 	    Message::Reaction {
 		sender: _,
 		pipo_id: _,
 		transport: _,
+                bus: _,
 		emoji,
 		remove: _,
 		username: _,
@@ -184,6 +203,7 @@ impl fmt::Display for Message {
 		sender: _,
 		pipo_id: _,
 		transport: _,
+                bus: _,
 		username: _,
 		avatar_url: _,
 		thread: _,
@@ -323,12 +343,16 @@ pub async fn inner_main() -> anyhow::Result<()> {
 	.context("Couldn't parse the JSON in the config file")?;
 
     // Once the configuration JSON has been deserialized into a
-    // ParsedConfig, iterate through buses, creating a broadcast channel
+    // ParsedConfig, iterate through buses, creating a mpsc channel
     // for each.
-    let mut bus_map: HashMap<String, broadcast::Sender<Message>>
+    let mut bus_map: HashMap<Arc<Bus>, (mpsc::Sender<Message>, mpsc::Receiver<Message>)>
 	= HashMap::new();
-    for bus in config_json.buses.into_iter() {
-	bus_map.insert(bus.id, broadcast::channel(100).0);
+    for (i, bus) in config_json.buses.into_iter().enumerate() {
+        let bus = Arc::new(Bus {
+            id: i as u64,
+            name: bus.id,
+        });
+	bus_map.insert(bus, mpsc::channel(100));
     }
 
     // Create Sender and Receiver for database mpsc channel
@@ -354,6 +378,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
     // all_transport_tasks.push(handle);
     
     for transport_id in 0..config_json.transports.len() {
+        let (tx, rx) = mpsc::channel(100);
 	match &config_json.transports[transport_id] {
 	    ConfigTransport::IRC {
 		nickname,
@@ -362,8 +387,17 @@ pub async fn inner_main() -> anyhow::Result<()> {
 		img_root,
 		channel_mapping
 	    } => {
+                let channel_mapping = channel_mapping
+                    .iter()
+                    .filter_map(|(c, b)| {
+                        bus_map.iter()
+                            .find(|(x, _)| x.name == **b)
+                            .map(|(x, _)| (c.clone(), x.clone()))
+                    })
+                    .collect();
 		// tokio::spawn maybe?
 		let mut instance = IRC::new(&bus_map,
+                                            rx,
 					    pipo_id.clone(),
 					    db_pool.clone(),
 					    nickname.to_string(),
@@ -395,7 +429,16 @@ pub async fn inner_main() -> anyhow::Result<()> {
 		guild_id,
 		channel_mapping
 	    } => {
+                let channel_mapping = channel_mapping
+                    .iter()
+                    .filter_map(|(c, b)| {
+                        bus_map.iter()
+                            .find(|(x, _)| x.name == **b)
+                            .map(|(x, _)| (c.clone(), x.clone()))
+                    })
+                    .collect();
 		let mut instance = Discord::new(transport_id,
+                                                rx,
 						&bus_map,
 						pipo_id.clone(),
 						db_pool.clone(),
@@ -417,7 +460,16 @@ pub async fn inner_main() -> anyhow::Result<()> {
 		bot_token,
 		channel_mapping
 	    } => {
+                let channel_mapping = channel_mapping
+                    .iter()
+                    .filter_map(|(c, b)| {
+                        bus_map.iter()
+                            .find(|(x, _)| x.name == **b)
+                            .map(|(x, _)| (c.clone(), x.clone()))
+                    })
+                    .collect();
 		let mut instance = Slack::new(transport_id,
+                                              rx,
 					      &bus_map,
 					      pipo_id.clone(),
 					      db_pool.clone(),
@@ -449,6 +501,14 @@ pub async fn inner_main() -> anyhow::Result<()> {
 		channel_mapping,
 		voice_channel_mapping
 	    } => {
+                let channel_mapping = channel_mapping
+                    .iter()
+                    .filter_map(|(c, b)| {
+                        bus_map.iter()
+                            .find(|(x, _)| x.name == **b)
+                            .map(|(x, _)| (c.clone(), x.clone()))
+                    })
+                    .collect();
                 let mut instance = Mumble::new(transport_id,
                                                server.clone(),
                                                password.clone(),
@@ -456,6 +516,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
                                                client_cert.clone(),
                                                server_cert.clone(),
                                                comment.as_deref(),
+                                               rx,
                                                &bus_map,
                                                &channel_mapping,
                                                &voice_channel_mapping,
@@ -478,6 +539,14 @@ pub async fn inner_main() -> anyhow::Result<()> {
 		interval,
 		buses
 	    } => {
+                let buses = buses
+                    .iter()
+                    .filter_map(|b| {
+                        bus_map.iter()
+                            .find(|(x, _)| x.name == **b)
+                            .map(|(x, _)| x.clone())
+                    })
+                    .collect();
 		let instance = Rachni::new(transport_id,
 					   &bus_map,
 					   &server,
