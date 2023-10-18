@@ -43,7 +43,7 @@ use tokio_stream::{
 };
 use tokio_tungstenite::*;
 
-use crate::{Message, Bus};
+use crate::{Message, Bus, TransportId, Router};
 
 pub mod objects;
 use objects::{
@@ -66,7 +66,7 @@ pub(crate) struct Slack {
     inbox: ReceiverStream<Message>,
     pipo_id: Arc<Mutex<i64>>,
     bus_map: HashMap<Arc<Bus>,String>,
-    channel_map: HashMap<String,(Arc<Bus>,mpsc::Sender<Message>)>,
+    channel_map: HashMap<String,(Arc<Bus>,Router)>,
     channel_id_map: HashMap<String,String>,
     id_map: HashMap<String,String>,
     users: HashMap<String,User>,
@@ -83,9 +83,9 @@ struct WebSocket {
 }
 
 impl Slack {
-    pub async fn new(transport_id: usize,
+    pub async fn new(transport_id: TransportId,
+                     router: mpsc::Sender<(Message,TransportId)>,
                      inbox: mpsc::Receiver<Message>,
-		     bus_map: &HashMap<Arc<Bus>,(mpsc::Sender<Message>,mpsc::Receiver<Message>)>,
 		     pipo_id: Arc<Mutex<i64>>,
 		     pool: Pool,
 		     token: String,
@@ -93,18 +93,11 @@ impl Slack {
 		     channel_mapping: &HashMap<Arc<String>,Arc<Bus>>)
 	-> anyhow::Result<Slack>
     {
-	let channel_map: HashMap<String,(Arc<Bus>,mpsc::Sender<Message>)> = channel_mapping.iter()
-	    .filter_map(|(channelname, bus)| {
-		if let Some((sender, _)) = bus_map.get(bus.as_ref()) {
-		    Some((channelname.as_ref().clone(), (bus.clone(), sender.clone())))
-		}
-		else {
-		    eprintln!("No bus named '{}' in configuration file.",
-			      bus.name);
-		    None
-		}
-	    }
-	    ).collect();
+        let router = Router(transport_id, router);
+	let channel_map: HashMap<String,(Arc<Bus>,Router)> = channel_mapping.iter()
+	    .map(|(channelname, bus)| {
+		(channelname.as_ref().clone(), (bus.clone(), router.clone()))
+	    }).collect();
         let bus_map = channel_map
             .iter()
             .map(|(x, (a, _))| (a.clone(), x.clone()))

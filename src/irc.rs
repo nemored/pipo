@@ -22,7 +22,8 @@ use anyhow::anyhow;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use crate::{
     Attachment,
-    Message, Bus,
+    Message, Bus, TransportId,
+    Router,
 };
 
 
@@ -32,15 +33,16 @@ pub(crate) struct IRC {
     transport_id: usize,
     config: Config,
     img_root: String,
-    channel_map: HashMap<String,(Arc<Bus>,mpsc::Sender<Message>)>,
+    channel_map: HashMap<String,Arc<Bus>>,
     bus_map: HashMap<Arc<Bus>,String>,
     pool: Pool,
+    router: Router,
     inbox: ReceiverStream<Message>,
     pipo_id: Arc<Mutex<i64>>
 }
 
 impl IRC {
-    pub async fn new(bus_map: &HashMap<Arc<Bus>,(mpsc::Sender<Message>, mpsc::Receiver<Message>)>,
+    pub async fn new(router: mpsc::Sender<(Message,TransportId)>,
                      inbox: mpsc::Receiver<Message>,
 		     pipo_id: Arc<Mutex<i64>>,
 		     pool: Pool,
@@ -48,26 +50,19 @@ impl IRC {
 		     server: String,
 		     use_tls: bool,
 		     img_root: &str,
-		     channel_mapping: &HashMap<Arc<String>,Arc<Bus>>,
-		     transport_id: usize)
+		     channel_map: &HashMap<Arc<String>,Arc<Bus>>,
+		     transport_id: TransportId)
 	-> anyhow::Result<IRC> {
         let inbox = ReceiverStream::new(inbox);
-	let channel_map: HashMap<String,(Arc<Bus>,mpsc::Sender<Message>)> = channel_mapping.iter()
-	    .filter_map(|(channelname, bus)| {
-		if let Some((sender, _)) = bus_map.get(bus.as_ref()) {
-		    Some((channelname.as_ref().clone(), (bus.clone(), sender.clone())))
-		}
-		else {
-		    eprintln!("No bus named '{}' in configuration file.",
-			      bus.name);
-		    None
-		}
-	    }
-	    ).collect();
+        let channel_map: HashMap<String,Arc<Bus>> = channel_map.clone()
+            .iter()
+            .map(|(x, y)| ((**x).to_owned(), y.clone()))
+            .collect();
         let bus_map = channel_map
             .iter()
-            .map(|(a, (x, _))| (x.clone(), a.clone()))
+            .map(|(a, x)| (x.clone(), a.clone()))
             .collect();
+        let router = Router(transport_id,router);
 	// Can this be done without an if/else?
 	let config = if let Some((server_addr, server_port))
 	    = server.rsplit_once(':') {
@@ -95,6 +90,7 @@ impl IRC {
             bus_map,
 	    transport_id,
 	    pool,
+            router,
             inbox,
 	    pipo_id
 	})
@@ -330,7 +326,7 @@ impl IRC {
 		let users: Vec<String> = users.into_iter().map(|user| {
 		    user.get_nickname().to_string()
 		}).collect();
-                if let Some((bus, sender)) = self.channel_map.get(channel) {
+                if let Some(bus) = self.channel_map.get(channel) {
 		    let message = Message::Names {
 		        sender: self.transport_id,
 		        transport: TRANSPORT_NAME.to_string(),
@@ -340,7 +336,7 @@ impl IRC {
 		    };
 
 		    eprintln!("Sending message: {:#}", message);
-		    if let Err(e) = sender.send(message).await {
+		    if let Err(e) = self.router.send(message).await {
 			eprintln!("Couldn't send message: {:#}", e);
 		    }
                 }
@@ -478,7 +474,7 @@ impl IRC {
 			     nickname: String,
 			     channel: String,
 			     message: String) -> anyhow::Result<()> {
-	if let Some((bus, sender)) = self.channel_map.get(&channel) {
+	if let Some(bus) = self.channel_map.get(&channel) {
 	    lazy_static! {
 		static ref RE: Regex
 		    =  Regex::new("^\x01ACTION (.*)\x01\r?$").unwrap();
@@ -504,7 +500,7 @@ impl IRC {
 		    is_edit: false,
 		    irc_flag: false,
 		};
-		return match sender.send(message).await {
+		return match self.router.send(message).await {
 		    Ok(_) => Ok(()),
 		    Err(e) => Err(anyhow!("Couldn't send message: {:#}", e))
 		}
@@ -523,7 +519,7 @@ impl IRC {
 		    is_edit: false,
 		    irc_flag: false,
 		};
-		return match sender.send(message).await {
+		return match self.router.send(message).await {
 		    Ok(_) => Ok(()),
 		    Err(e) => Err(anyhow!("Couldn't send message: {:#}", e))
 		}
@@ -559,7 +555,7 @@ impl IRC {
 			   nickname: String,
 			   channel: String,
 			   message: String) -> anyhow::Result<()> {
-	if let Some((bus, sender)) = self.channel_map.get(&channel) {
+	if let Some(bus) = self.channel_map.get(&channel) {
 	    lazy_static! {
 		static ref RE: Regex
 		    =  Regex::new("^\x01ACTION (.*)\x01\r?$").unwrap();
@@ -584,7 +580,7 @@ impl IRC {
 		    is_edit: false,
 		    irc_flag: false,
 		};
-		return match sender.send(message).await {
+		return match self.router.send(message).await {
 		    Ok(_) => Ok(()),
 		    Err(e) => Err(anyhow!("Couldn't send message: {:#}", e))
 		}
@@ -604,7 +600,7 @@ impl IRC {
 		    is_edit: false,
 		    irc_flag: false,
 		};
-		return match sender.send(message).await {
+		return match self.router.send(message).await {
 		    Ok(_) => Ok(()),
 		    Err(e) => Err(anyhow!("Couldn't send message: {:#}", e))
 		}
