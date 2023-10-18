@@ -25,7 +25,7 @@ use tokio::{
     }
 };
 
-use crate::{Message, Bus};
+use crate::{Message, Bus, TransportId, Router};
 
 const TRANSPORT_NAME: &'static str = "Rachni";
 
@@ -34,21 +34,22 @@ pub(crate) struct Rachni {
     server: String,
     api_key: String,
     interval: u64,
-    bus_map: HashMap<Arc<Bus>, mpsc::Sender<Message>>,
+    bus_map: HashMap<Arc<Bus>, Router>,
     pool: Pool,
     pipo_id: Arc<Mutex<i64>>
 }
 
 impl Rachni {
-    pub async fn new(transport_id: usize,
-		     bus_map: &HashMap<Arc<Bus>, (mpsc::Sender<Message>, mpsc::Receiver<Message>)>,
+    pub async fn new(transport_id: TransportId,
+                     router: mpsc::Sender<(Message,TransportId)>,
 		     server: &str, api_key: &str, interval: u64,
 		     buses: &Vec<Arc<Bus>>, pool: Pool, pipo_id: Arc<Mutex<i64>>)
 	-> anyhow::Result<Rachni> {
 	let server = String::from(server);
 	let api_key = String::from(api_key);
-	let bus_map = buses.iter().filter_map(|bus| {
-	    bus_map.get(bus).map(|(sender, _)| (bus.clone(), sender.clone()))
+        let router = Router(transport_id, router);
+	let bus_map = buses.iter().map(|bus| {
+	    (bus.clone(), router.clone())
 	}).collect();
 
 	Ok(Rachni { transport_id, server, api_key, interval, bus_map, pool,
