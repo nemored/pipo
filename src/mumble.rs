@@ -15,7 +15,7 @@ use tokio_rustls::{TlsConnector, rustls::{ClientConfig, RootCertStore, OwnedTrus
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use webpki_roots;
 
-use crate::{Message, Attachment, Bus};
+use crate::{Message, Attachment, Bus, TransportId, Router};
 
 mod cert_verifier;
 mod protocol;
@@ -69,7 +69,7 @@ pub(crate) struct Mumble {
     comment: Option<String>,
     stream: Option<TlsStream<TcpStream>>,
     bus_map: HashMap<Arc<Bus>,Arc<String>>,
-    channel_map: HashMap<Arc<String>,(Option<Arc<mumble::ChannelState>>,Arc<Bus>,mpsc::Sender<Message>)>,
+    channel_map: HashMap<Arc<String>,(Option<Arc<mumble::ChannelState>>,Arc<Bus>,Router)>,
     channel_ids: HashMap<u32,Arc<mumble::ChannelState>>,
     users: HashMap<u32,mumble::UserState>,
     pipo_id: Arc<Mutex<i64>>,
@@ -79,15 +79,15 @@ pub(crate) struct Mumble {
 }
 
 impl Mumble {
-    pub async fn new(transport_id: usize,
+    pub async fn new(transport_id: TransportId,
                      server: Arc<String>,
                      password: Arc<Option<String>>,
                      nickname: Arc<String>,
                      client_cert: Arc<Option<String>>,
                      server_cert: Arc<Option<String>>,
                      comment: Option<&str>,
+                     router: mpsc::Sender<(Message,TransportId)>,
                      inbox: mpsc::Receiver<Message>,
-                     bus_map: &HashMap<Arc<Bus>,(mpsc::Sender<Message>,mpsc::Receiver<Message>)>,
                      channel_mapping: &HashMap<Arc<String>,Arc<Bus>>,
                      _voice_channel_mapping: &HashMap<Arc<String>,Arc<String>>,
                      pipo_id: Arc<Mutex<i64>>,
@@ -96,17 +96,10 @@ impl Mumble {
     {
         let comment = comment.map(|s| s.to_string());
         let stream = None;
-        let channel_map: HashMap<Arc<String>,(Option<Arc<mumble::ChannelState>>,Arc<Bus>,mpsc::Sender<Message>)> = channel_mapping.iter()
-            .filter_map(|(channelname, bus)| {
-                if let Some((sender, _)) = bus_map.get(bus.as_ref()) {
-                    Some((channelname.clone(), (None, bus.clone(), sender.clone())))
-                }
-                else {
-                    eprintln!("No bus named '{}' in configuration file.",
-                              bus.name);
-
-                    None
-                }
+        let router = Router(transport_id, router);
+        let channel_map: HashMap<Arc<String>,(Option<Arc<mumble::ChannelState>>,Arc<Bus>,Router)> = channel_mapping.iter()
+            .map(|(channelname, bus)| {
+                    (channelname.clone(), (None, bus.clone(), router.clone()))
             }).collect();
         let bus_map = channel_map
             .iter()

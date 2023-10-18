@@ -17,8 +17,9 @@ use serde_json;
 use tokio::{
     io::AsyncReadExt,
     fs::File,
-    sync::mpsc,
+    sync::mpsc::{self, error::SendError},
 };
+use tokio_stream::{StreamExt,StreamMap, wrappers::ReceiverStream};
 
 mod irc;
 pub mod slack;
@@ -35,10 +36,64 @@ use crate::rachni::Rachni;
 
 pub use crate::slack::objects;
 
+type TransportId = usize;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct Transport {
+    id: TransportId,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct Subscriber {
+    transport: Transport,
+}
+
+impl Subscriber {
+    pub fn new(transport: Transport) -> Self {
+        Self { transport }
+    }
+}
+
+type BusId = usize;
+
 #[derive(Clone, Eq, Debug, Hash, PartialEq)]
 struct Bus {
-    id: u64,
+    id: BusId,
     name: String,
+    subscribers: Vec<Subscriber>,
+}
+
+impl Bus {
+    pub fn new(id: usize, name: &str) -> Self {
+        Self {
+            id,
+            name: name.to_string(),
+            subscribers: vec![]
+        }
+    }
+    pub fn subscribe(&mut self,
+                     subscribers: &mut Subscribers,
+                     subscriber: &Subscriber)
+                     -> anyhow::Result<mpsc::Receiver<Message>> {
+        if self.subscribers.iter().find(|x| *x == subscriber).is_none() {
+            let (tx, rx) = mpsc::channel(100);
+            self.subscribers.push(subscriber.clone());
+            let res = subscribers.insert(subscriber.clone(), tx);
+            assert!(res.is_none());
+            Ok(rx)
+        }
+        else {
+            Err(anyhow!("already subscribed"))
+        }
+    }
+}
+
+type Subscribers = HashMap<Subscriber,mpsc::Sender<Message>>;
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct MessageSource {
+    bus: BusId,
+    transport: TransportId,
 }
 
 #[derive(Clone, Debug)]
@@ -272,6 +327,15 @@ struct ParsedConfig {
     transports: Vec<ConfigTransport>,
 }
 
+#[derive(Clone)]
+pub(crate) struct Router(TransportId,mpsc::Sender<(Message,TransportId)>);
+
+impl Router {
+    pub async fn send(&self, message: Message) -> Result<(), SendError<(Message,TransportId)>> {
+        self.1.send((message, self.0)).await
+    }
+}
+
 pub async fn inner_main() -> anyhow::Result<()> {
 	let args: Vec<String> = env::args().collect();
 	let config_path = args.get(1).cloned().or(env::var("CONFIG_PATH").ok());
@@ -345,15 +409,20 @@ pub async fn inner_main() -> anyhow::Result<()> {
     // Once the configuration JSON has been deserialized into a
     // ParsedConfig, iterate through buses, creating a mpsc channel
     // for each.
-    let mut bus_map: HashMap<Arc<Bus>, (mpsc::Sender<Message>, mpsc::Receiver<Message>)>
-	= HashMap::new();
+    // let mut bus_map: HashMap<Arc<Bus>, (mpsc::Sender<Message>, mpsc::Receiver<Message>)> = HashMap::new();
+    let mut bus_map = HashMap::new();
+    let mut bus_id_map = HashMap::new();
     for (i, bus) in config_json.buses.into_iter().enumerate() {
+        bus_id_map.insert(bus.id.clone(), i);
         let bus = Arc::new(Bus {
-            id: i as u64,
+            id: i,
             name: bus.id,
+            subscribers: vec![],
         });
-	bus_map.insert(bus, mpsc::channel(100));
+	bus_map.insert(bus.id, bus);
     }
+
+    let subscribers = Subscribers::new();
 
     // Create Sender and Receiver for database mpsc channel
     // let (db_tx, mut db_rx): (mpsc::Sender<(String, String)>,
@@ -377,8 +446,11 @@ pub async fn inner_main() -> anyhow::Result<()> {
 
     // all_transport_tasks.push(handle);
     
+    let (router_tx, router_rx) = mpsc::channel(10);
+    let mut transport_map = HashMap::new();
     for transport_id in 0..config_json.transports.len() {
-        let (tx, rx) = mpsc::channel(100);
+        let (inbox_tx, inbox_rx) = mpsc::channel(100);
+        let transport = Transport { id: transport_id };
 	match &config_json.transports[transport_id] {
 	    ConfigTransport::IRC {
 		nickname,
@@ -390,14 +462,14 @@ pub async fn inner_main() -> anyhow::Result<()> {
                 let channel_mapping = channel_mapping
                     .iter()
                     .filter_map(|(c, b)| {
-                        bus_map.iter()
-                            .find(|(x, _)| x.name == **b)
-                            .map(|(x, _)| (c.clone(), x.clone()))
+                        bus_id_map.get(&**b)
+                            .and_then(|x| bus_map.get(x))
+                            .map(|x| (c.clone(), x.clone()))
                     })
                     .collect();
 		// tokio::spawn maybe?
-		let mut instance = IRC::new(&bus_map,
-                                            rx,
+		let mut instance = IRC::new(router_tx.clone(),
+                                            inbox_rx,
 					    pipo_id.clone(),
 					    db_pool.clone(),
 					    nickname.to_string(),
@@ -432,14 +504,14 @@ pub async fn inner_main() -> anyhow::Result<()> {
                 let channel_mapping = channel_mapping
                     .iter()
                     .filter_map(|(c, b)| {
-                        bus_map.iter()
-                            .find(|(x, _)| x.name == **b)
-                            .map(|(x, _)| (c.clone(), x.clone()))
+                        bus_id_map.get(&**b)
+                            .and_then(|x| bus_map.get(x))
+                            .map(|x| (c.clone(), x.clone()))
                     })
                     .collect();
 		let mut instance = Discord::new(transport_id,
-                                                rx,
-						&bus_map,
+                                                router_tx.clone(),
+                                                inbox_rx,
 						pipo_id.clone(),
 						db_pool.clone(),
 						token.to_string(),
@@ -463,14 +535,14 @@ pub async fn inner_main() -> anyhow::Result<()> {
                 let channel_mapping = channel_mapping
                     .iter()
                     .filter_map(|(c, b)| {
-                        bus_map.iter()
-                            .find(|(x, _)| x.name == **b)
-                            .map(|(x, _)| (c.clone(), x.clone()))
+                        bus_id_map.get(&**b)
+                            .and_then(|x| bus_map.get(x))
+                            .map(|x| (c.clone(), x.clone()))
                     })
                     .collect();
 		let mut instance = Slack::new(transport_id,
-                                              rx,
-					      &bus_map,
+                                              router_tx.clone(),
+                                              inbox_rx,
 					      pipo_id.clone(),
 					      db_pool.clone(),
 					      token.to_string(),
@@ -504,9 +576,9 @@ pub async fn inner_main() -> anyhow::Result<()> {
                 let channel_mapping = channel_mapping
                     .iter()
                     .filter_map(|(c, b)| {
-                        bus_map.iter()
-                            .find(|(x, _)| x.name == **b)
-                            .map(|(x, _)| (c.clone(), x.clone()))
+                        bus_id_map.get(&**b)
+                            .and_then(|x| bus_map.get(x))
+                            .map(|x| (c.clone(), x.clone()))
                     })
                     .collect();
                 let mut instance = Mumble::new(transport_id,
@@ -516,8 +588,8 @@ pub async fn inner_main() -> anyhow::Result<()> {
                                                client_cert.clone(),
                                                server_cert.clone(),
                                                comment.as_deref(),
-                                               rx,
-                                               &bus_map,
+                                               router_tx.clone(),
+                                               inbox_rx,
                                                &channel_mapping,
                                                &voice_channel_mapping,
                                                pipo_id.clone(),
@@ -542,13 +614,13 @@ pub async fn inner_main() -> anyhow::Result<()> {
                 let buses = buses
                     .iter()
                     .filter_map(|b| {
-                        bus_map.iter()
-                            .find(|(x, _)| x.name == **b)
-                            .map(|(x, _)| x.clone())
+                        bus_id_map.get(&**b)
+                            .and_then(|x| bus_map.get(x))
+                            .cloned()
                     })
                     .collect();
 		let instance = Rachni::new(transport_id,
-					   &bus_map,
+                                           router_tx.clone(),
 					   &server,
 					   &api_key,
 					   *interval,
@@ -567,7 +639,12 @@ pub async fn inner_main() -> anyhow::Result<()> {
 		all_transport_tasks.push(handle);
 	    }
 	}
+        transport_map.insert(transport_id, inbox_tx);
     }
+
+    let subscribers = Arc::new(Mutex::new(subscribers));
+    let buses = Arc::new(bus_map);
+    tokio::spawn(router(transport_map, router_rx));
 
     for task in all_transport_tasks {
 	match task.await {
@@ -577,6 +654,18 @@ pub async fn inner_main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn router(transport_map: HashMap<TransportId,mpsc::Sender<Message>>,
+                mut rx: mpsc::Receiver<(Message,TransportId)>) {
+    while let Some((message, transport_id)) = rx.recv().await {
+        for (id, tx) in transport_map.iter() {
+            if *id == transport_id { continue; }
+            let message = message.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move { tx.send(message).await });
+        }
+    }
 }
 
 

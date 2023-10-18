@@ -41,7 +41,7 @@ use tokio::sync::{
 };
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
-use crate::{Message, Bus};
+use crate::{Message, Bus, TransportId, Router};
 
 
 const TRANSPORT_NAME: &'static str = "Discord";
@@ -72,7 +72,7 @@ struct RealHandler {
 
 #[derive(Clone)]
 struct HandlerChannel {
-    sender: mpsc::Sender<Message>,
+    sender: Router,
     webhook: Option<u64>
 }
 
@@ -162,7 +162,7 @@ impl Shared {
     }
 
     fn get_sender<C: AsRef<ChannelId>>(&self, channel: C)
-	-> Option<mpsc::Sender<Message>> {
+	-> Option<Router> {
 	let state = self.state.lock().unwrap();
 	state.channels.get(channel.as_ref().as_u64()).map(|c| c.sender.clone())
     }
@@ -894,7 +894,7 @@ impl RealHandler {
     async fn get_sender_and_thread(&self, channel_id: ChannelId,
 				   thread: &mut Option<(Option<String>,
 							Option<u64>)>)
-	-> Option<mpsc::Sender<Message>> {
+	-> Option<Router> {
 	if let Some(sender) = self.shared.get_sender(channel_id) {
 	    return Some(sender)
 	}
@@ -909,7 +909,7 @@ impl RealHandler {
     }
 
     async fn delete_message(&self, channel_id: &ChannelId, message_id: MessageId,
-			    sender: &mpsc::Sender<Message>) {
+			    sender: &Router) {
 	let pipo_id = match self.select_id_from_messages(message_id).await {
 	    Ok(id) => id,
 	    Err(e) => {
@@ -1333,9 +1333,9 @@ impl EventHandler for Handler {
 }
 
 impl Discord {
-    pub async fn new(transport_id: usize,
+    pub async fn new(transport_id: TransportId,
+                     router: mpsc::Sender<(Message,TransportId)>,
                      inbox: mpsc::Receiver<Message>,
-		     bus_map: &HashMap<Arc<Bus>,(mpsc::Sender<Message>,mpsc::Receiver<Message>)>,
 		     pipo_id: Arc<Mutex<i64>>,
 		     pool: Pool,
 		     token: String,
@@ -1343,21 +1343,16 @@ impl Discord {
 		     channel_mapping: &HashMap<Arc<String>,Arc<Bus>>)
 	             -> anyhow::Result<Discord> {
         let inbox = ReceiverStream::new(inbox);
+        let router = Router(transport_id, router);
 	let channels = channel_mapping.iter()
-	    .filter_map(|(channelname, bus)| {
-		if let Some((sender, _)) = bus_map.get(bus.as_ref()) {
-		    Some((channelname.parse::<u64>().unwrap(),
-			  HandlerChannel {
-			      sender: sender.clone(),
-			      webhook: None
-			  }))
-		}
-		else {
-		    eprintln!("No bus named '{}' in configuration file.", bus.name);
-		    None
-		}
-	    }
-	    ).collect();
+	    .map(|(channelname, _)| {
+		(channelname.parse::<u64>().unwrap(),
+		 HandlerChannel {
+		     sender: router.clone(),
+		     webhook: None
+		 })     
+	    })
+	    .collect();
         let mut new_map = HashMap::new();
         for (k, v) in channel_mapping.iter() {
             new_map.insert(unwrap_channel(k)?, (**v).clone());
