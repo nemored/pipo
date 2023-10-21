@@ -48,7 +48,7 @@ const TRANSPORT_NAME: &'static str = "Discord";
 
 const VALID_CHARS: &'static str = "0123456789";
 
-pub(crate) struct Discord {
+pub struct Discord {
     transport_id: usize,
     token: String,
     guild: GuildId,
