@@ -19,7 +19,6 @@ use tokio::{
     fs::File,
     sync::mpsc::{self, error::SendError},
 };
-use tokio_stream::{StreamExt,StreamMap, wrappers::ReceiverStream};
 
 mod irc;
 pub mod slack;
@@ -30,7 +29,7 @@ pub(crate) mod protos;
 
 use crate::irc::IRC;
 use crate::slack::Slack;
-use crate::discord::Discord;
+pub use crate::discord::Discord;
 use crate::mumble::Mumble;
 use crate::rachni::Rachni;
 
