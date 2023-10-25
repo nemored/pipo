@@ -15,6 +15,7 @@ bytes = "1.5"
 chrono = "0.4"
 deadpool-sqlite = "0.5"
 emojis = "0.6"
+erlang-term = { version = "1.1", features = ["serde_impl"] }
 futures = "0.3"
 hmac = "0.12"
 html-escape = "0.2"
@@ -28,6 +29,7 @@ reqwest = "0.11"
 rusqlite = "0.28"
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
+serde_eetf = "0.2"
 serde_json = "1.0"
 serenity = { version = "0.11", default_features = false, features = ["chrono", "client", "gateway", "native_tls_backend", "model"] }
 sha2 = "0.10"
@@ -39,3 +41,6 @@ webpki-roots = "0.25"
 
 [build-dependencies]
 protoc-rust = "2"
+
+[[bin]]
+name = "discord"
