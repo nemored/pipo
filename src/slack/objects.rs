@@ -1,4 +1,4 @@
-use std::fmt;
+use std::fmt::{self, Display};
 
 use serde::{
     de::{
@@ -101,15 +101,15 @@ pub struct Message {
     pub upload: Option<bool>,
     pub user: Option<String>,
     pub display_as_bot: Option<bool>,
-    pub ts: Option<String>,
-    pub deleted_ts: Option<String>,
+    pub ts: Option<Timestamp>,
+    pub deleted_ts: Option<Timestamp>,
     pub team: Option<String>,
     pub attachments: Option<Vec<Attachment>>,
     pub blocks: Option<Vec<Block>>,
     pub channel: Option<String>,
     pub previous_message: Option<Box<Event>>,
-    pub event_ts: Option<String>,
-    pub thread_ts: Option<String>,
+    pub event_ts: Option<Timestamp>,
+    pub thread_ts: Option<Timestamp>,
     pub channel_type: Option<String>,
     pub edited: Option<Edited>,
 }
@@ -284,6 +284,12 @@ pub struct Attachment {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Timestamp(pub String);
+
+impl Display for Timestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag="type", rename_all="snake_case")]
