@@ -1,65 +1,205 @@
 use std::{
     collections::HashMap,
-    env,
-    fmt,
-    sync::{Arc, Mutex},
+    fmt::{self, Debug, Display},
+    sync::{Arc, Mutex}, ops::Deref,
 };
 
-use anyhow::{
-    anyhow,
-    Context,
-};
-use deadpool_sqlite::{Config, Runtime};
+use anyhow::anyhow;
+use deadpool_sqlite::{Config, Pool, Runtime};
+use discord::DiscordId;
 use regex::bytes::Regex;
-use rusqlite::Error::QueryReturnedNoRows;
-use serde::Deserialize;
+use rusqlite::{types::FromSql, ToSql, params};
+use serde::{Deserialize, Serialize};
 use serde_json;
+use serenity::model::prelude::ChannelId;
+
 use tokio::{
-    io::AsyncReadExt,
     fs::File,
+    io::AsyncReadExt,
     sync::mpsc::{self, error::SendError},
+    task::JoinHandle,
 };
+use tokio_stream::{StreamExt, StreamMap};
 
-mod irc;
-pub mod slack;
 mod discord;
+mod irc;
 mod mumble;
-mod rachni;
 pub(crate) mod protos;
+mod rachni;
+pub mod slack;
 
-use crate::irc::IRC;
-use crate::slack::Slack;
 pub use crate::discord::Discord;
-use crate::mumble::Mumble;
-use crate::rachni::Rachni;
+pub use crate::irc::IRC;
+pub use crate::mumble::Mumble;
+pub use crate::rachni::Rachni;
+pub use crate::slack::Slack;
 
 pub use crate::slack::objects;
+use crate::slack::objects::Timestamp;
 
-type TransportId = usize;
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct Transport {
-    id: TransportId,
+pub(crate) trait MessageId: Clone + Debug + Display + FromSql + Send + Sync + ToSql {
+    const COLUMN: &'static str;
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct Subscriber {
-    transport: Transport,
+#[derive(Clone)]
+pub struct Database {
+    pool: Pool,
+    pipo_id: Arc<Mutex<i64>>,
+}
+
+impl Database {
+    pub fn new(pool: Pool, pipo_id: Arc<Mutex<i64>>) -> Self {
+        Database { pool, pipo_id }
+    }
+    async fn insert_into_messages_table<I>(&self, id: Option<I>) -> anyhow::Result<i64>
+    where
+        I: MessageId + 'static
+    {
+        let conn = self.pool.get().await.unwrap();
+        let column = id.as_ref().map(|_| I::COLUMN);
+        let pipo_id = *self.pipo_id.lock().unwrap();
+        if let Some(ref id) = id {
+            eprintln!("Inserting message_id {id} into table at id {pipo_id}");
+        }
+        let id = id.clone();
+
+        // TODO: ugly error handling needs fixing
+        conn.interact(move |conn| -> anyhow::Result<usize> {
+            Ok(conn.execute(
+                "INSERT OR REPLACE INTO messages (id, ?1) 
+            VALUES (?2, ?3)",
+                params![column, pipo_id, id],
+            )?)
+        })
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("Interact Error")))?;
+
+        let ret = pipo_id;
+        let mut pipo_id = self.pipo_id.lock().unwrap();
+        *pipo_id += 1;
+        if *pipo_id > 40000 {
+            *pipo_id = 0
+        }
+
+        Ok(ret)
+    }
+    async fn select_id_from_messages<M>(&self, id: M) -> anyhow::Result<Option<i64>>
+    where
+        M: MessageId + 'static
+    {
+        let conn = self.pool.get().await.unwrap();
+
+        Ok(Some(
+            conn.interact(move |conn| -> anyhow::Result<i64> {
+                Ok(conn.query_row(
+                    "SELECT id FROM messages WHERE ?1 = ?2",
+                    params![M::COLUMN, id],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+            .unwrap_or_else(|_| Err(anyhow!("Interact Error")))?,
+        ))
+    }
+    async fn update_messages_table<M>(
+        &self,
+        pipo_id: i64,
+        message_id: M,
+    ) -> anyhow::Result<()>
+    where
+        M: MessageId + 'static
+    {
+        let conn = self.pool.get().await.unwrap();
+
+        eprintln!("Adding {message_id} ID: {pipo_id}");
+
+        // TODO: ugly error handling needs fixing
+        conn.interact(move |conn| -> anyhow::Result<usize> {
+            Ok(conn.execute(
+                "UPDATE messages SET ?2 = ?3
+            WHERE id = ?1",
+                params![pipo_id, M::COLUMN, message_id],
+            )?)
+        })
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("Interact Error")))?;
+
+        Ok(())
+    }
+    async fn select_messageid_from_messages<M>(&self, pipo_id: i64) -> anyhow::Result<Option<M>>
+    where
+        M: MessageId + 'static
+    {
+        let conn = self.pool.get().await.unwrap();
+
+        // TODO: ugly error handling needs fixing
+        let ret = match conn
+            .interact(move |conn| -> anyhow::Result<Option<M>> {
+                Ok(conn.query_row(
+                    "SELECT ?2 FROM messages WHERE id = ?1",
+                    params![pipo_id, M::COLUMN],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+        {
+            Ok(res) => res,
+            Err(_) => Err(anyhow!("Interact Error")),
+        }?;
+
+        eprintln!("Found ts {:?} at id {}", ret, pipo_id);
+
+        Ok(ret)
+    }
+    async fn get_messageid_from_messageid<I, O>(&self, message_id: I) -> anyhow::Result<Option<O>>
+    where
+        I: MessageId + 'static,
+        O: MessageId + 'static
+    {
+        let conn = self.pool.get().await.unwrap();
+        let old_message_id = message_id.clone();
+
+        // TODO: ugly error handling needs fixing
+        let ret = match conn
+            .interact(move |conn| -> anyhow::Result<Option<O>> {
+                Ok(conn.query_row(
+                    "SELECT ?3 FROM messages WHERE ?1 = ?2",
+                    params![I::COLUMN, message_id, O::COLUMN],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+        {
+            Ok(res) => res,
+            Err(_) => Err(anyhow!("Interact Error")),
+        }?;
+
+        eprintln!("Found ts {ret:?} at id {old_message_id}");
+
+        Ok(ret)
+    }
+}
+
+pub type TransportId = usize;
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct Subscriber {
+    transport: TransportId,
 }
 
 impl Subscriber {
-    pub fn new(transport: Transport) -> Self {
+    pub fn new(transport: TransportId) -> Self {
         Self { transport }
     }
 }
 
 type BusId = usize;
 
-#[derive(Clone, Eq, Debug, Hash, PartialEq)]
-struct Bus {
-    id: BusId,
-    name: String,
-    subscribers: Vec<Subscriber>,
+#[derive(Clone, Deserialize, Eq, Debug, Hash, PartialEq, Serialize)]
+pub struct Bus {
+    pub id: BusId,
+    pub name: String,
+    pub subscribers: Vec<Subscriber>,
 }
 
 impl Bus {
@@ -67,27 +207,27 @@ impl Bus {
         Self {
             id,
             name: name.to_string(),
-            subscribers: vec![]
+            subscribers: vec![],
         }
     }
-    pub fn subscribe(&mut self,
-                     subscribers: &mut Subscribers,
-                     subscriber: &Subscriber)
-                     -> anyhow::Result<mpsc::Receiver<Message>> {
+    pub fn subscribe(
+        &mut self,
+        subscribers: &mut Subscribers,
+        subscriber: &Subscriber,
+    ) -> anyhow::Result<mpsc::Receiver<Message>> {
         if self.subscribers.iter().find(|x| *x == subscriber).is_none() {
             let (tx, rx) = mpsc::channel(100);
             self.subscribers.push(subscriber.clone());
             let res = subscribers.insert(subscriber.clone(), tx);
             assert!(res.is_none());
             Ok(rx)
-        }
-        else {
+        } else {
             Err(anyhow!("already subscribed"))
         }
     }
 }
 
-type Subscribers = HashMap<Subscriber,mpsc::Sender<Message>>;
+type Subscribers = HashMap<Subscriber, mpsc::Sender<Message>>;
 
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct MessageSource {
@@ -95,77 +235,77 @@ struct MessageSource {
     transport: TransportId,
 }
 
-#[derive(Clone, Debug)]
-enum Message {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum Message {
     Action {
-	sender: usize,
-	pipo_id: i64,
-	transport: String,
+        sender: usize,
+        pipo_id: Option<i64>,
+        transport: String,
         bus: Bus,
-	username: String,
-	avatar_url: Option<String>,
-	thread: Option<(Option<String>, Option<u64>)>,
-	message: Option<String>,
-	attachments: Option<Vec<Attachment>>,
-	is_edit: bool,
-	irc_flag: bool,
+        username: String,
+        avatar_url: Option<String>,
+        thread: Option<(Option<Timestamp>, Option<ChannelId>)>,
+        message: Option<String>,
+        attachments: Option<Vec<Attachment>>,
+        is_edit: bool,
+        irc_flag: bool,
     },
     Bot {
-	sender: usize,
-	pipo_id: i64,
-	transport: String,
+        sender: usize,
+        pipo_id: Option<i64>,
+        transport: String,
         bus: Bus,
-	message: Option<String>,
-	attachments: Option<Vec<Attachment>>,
-	is_edit: bool,
+        message: Option<String>,
+        attachments: Option<Vec<Attachment>>,
+        is_edit: bool,
     },
     Delete {
-	sender: usize,
-	pipo_id: i64,
-	transport: String,
+        sender: usize,
+        pipo_id: Option<i64>,
+        transport: String,
         bus: Bus,
     },
     Names {
-	sender: usize,
-	transport: String,
+        sender: usize,
+        transport: String,
         bus: Bus,
-	username: String,
-	message: Option<String>,
+        username: String,
+        message: Option<String>,
     },
     Pin {
-	sender: usize,
-	pipo_id: i64,
+        sender: usize,
+        pipo_id: Option<i64>,
         bus: Bus,
-	remove: bool,
+        remove: bool,
     },
     Reaction {
-	sender: usize,
-	pipo_id: i64,
-	transport: String,
+        sender: usize,
+        pipo_id: Option<i64>,
+        transport: String,
         bus: Bus,
-	emoji: String,
-	remove: bool,
-	username: Option<String>,
-	avatar_url: Option<String>,
-	thread: Option<(Option<String>, Option<u64>)>
+        emoji: String,
+        remove: bool,
+        username: Option<String>,
+        avatar_url: Option<String>,
+        thread: Option<(Option<Timestamp>, Option<ChannelId>)>,
     },
     Text {
-	sender: usize,
-	pipo_id: i64,
-	transport: String,
+        sender: usize,
+        pipo_id: Option<i64>,
+        transport: String,
         bus: Bus,
-	username: String,
-	avatar_url: Option<String>,
-	thread: Option<(Option<String>, Option<u64>)>,
-	message: Option<String>,
-	attachments: Option<Vec<Attachment>>,
-	is_edit: bool,
-	irc_flag: bool,
-    }
+        username: String,
+        avatar_url: Option<String>,
+        thread: Option<(Option<Timestamp>, Option<ChannelId>)>,
+        message: Option<String>,
+        attachments: Option<Vec<Attachment>>,
+        is_edit: bool,
+        irc_flag: bool,
+    },
 }
 
-#[derive(Clone, Debug, Default)]
-struct Attachment {
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Attachment {
     id: u64,
     pipo_id: Option<i64>,
     service_name: Option<String>,
@@ -191,480 +331,150 @@ struct Attachment {
 
 impl fmt::Display for Message {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-	match self {
-	    Message::Action {
-		sender: _,
-		pipo_id: _,
-		transport: _,
+        match self {
+            Message::Action {
+                sender: _,
+                pipo_id: _,
+                transport: _,
                 bus: _,
-		username: _,
-		avatar_url: _,
-		thread: _,
-		message,
-		attachments: _,
-		is_edit: _,
-		irc_flag: _,
-	    } => match message {
-		Some(message) => write!(f, "{}", message),
-		None => write!(f, "Empty message")
-	    },
-	    Message::Bot {
-		sender: _,
-		pipo_id: _,
-		transport: _,
-                bus: _,
-		message,
-		attachments: _,
-		is_edit: _,
-	    } => match message {
-		Some(message) => write!(f, "{}", message),
-		None => write!(f, "Empty message")
-	    },
-	    Message::Delete {
-		sender: _,
-		pipo_id: _,
-		transport: _,
-                bus: _,
-	    } => write!(f, "Delete message"),
-	    Message::Names {
-		sender: _,
-		transport: _,
-                bus: _,
-		username: _,
-		message,
-	    } => match message {
-		Some(message) => write!(f, "{}", message),
-		None => write!(f, "Empty message")
-	    },
-	    Message::Pin {
-		sender: _,
-		pipo_id: _,
-                bus: _,
-		remove: _,
-	    } => write!(f, "Pin message"),
-	    Message::Reaction {
-		sender: _,
-		pipo_id: _,
-		transport: _,
-                bus: _,
-		emoji,
-		remove: _,
-		username: _,
-		avatar_url: _,
-		thread: _,
-	    } => write!(f, ":{}:", emoji),
-	    Message::Text {
-		sender: _,
-		pipo_id: _,
-		transport: _,
-                bus: _,
-		username: _,
-		avatar_url: _,
-		thread: _,
-		message,
-		attachments: _,
-		is_edit: _,
-		irc_flag: _,
-	    } => match message {
-		Some(message) => write!(f, "{}", message),
-		None => write!(f, "Empty Message")
-	    }
-	}
-    }
-}
-
-#[derive(Deserialize, Debug)]
-struct ConfigBus {
-    id: String
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(tag="transport")]
-enum ConfigTransport {
-    IRC {
-	nickname: Arc<String>,
-	server: Arc<String>,
-	use_tls: bool,
-	img_root: Arc<String>,
-	channel_mapping: HashMap<Arc<String>,Arc<String>>,
-    },
-    Discord {
-	token: Arc<String>,
-	guild_id: u64,
-	channel_mapping: HashMap<Arc<String>,Arc<String>>,
-    },
-    Slack {
-	token: Arc<String>,
-	bot_token: Arc<String>,
-	channel_mapping: HashMap<Arc<String>,Arc<String>>,
-    },
-    Minecraft {
-	username: Arc<String>,
-	buses: Vec<Arc<String>>,
-    },
-    Mumble {
-	server: Arc<String>,
-	password: Arc<Option<String>>,
-	nickname: Arc<String>,
-	client_cert: Arc<Option<String>>,
-	server_cert: Arc<Option<String>>,
-	comment: Option<String>,
-	channel_mapping: HashMap<Arc<String>,Arc<String>>,
-	voice_channel_mapping: HashMap<Arc<String>,Arc<String>>,
-    },
-    Rachni {
-	server: Arc<String>,
-	api_key: Arc<String>,
-	interval: u64,
-	buses: Arc<Vec<String>>,
-    },
-}
-
-#[derive(Deserialize, Debug)]
-struct ParsedConfig {
-    buses: Vec<ConfigBus>,
-    transports: Vec<ConfigTransport>,
-}
-
-#[derive(Clone)]
-pub(crate) struct Router(TransportId,mpsc::Sender<(Message,TransportId)>);
-
-impl Router {
-    pub async fn send(&self, message: Message) -> Result<(), SendError<(Message,TransportId)>> {
-        self.1.send((message, self.0)).await
-    }
-}
-
-pub async fn inner_main() -> anyhow::Result<()> {
-	let args: Vec<String> = env::args().collect();
-	let config_path = args.get(1).cloned().or(env::var("CONFIG_PATH").ok());
-	let db_path = args.get(2).cloned().or(env::var("DB_PATH").ok());
-	// Parse command line arguments
-    //
-    // Usage: ./pipo path-oogkm.json [path-to-db.db3]
-
-    if config_path.is_none() || db_path.is_none() {
-	println!("Usage: {} path-to-config.json [path-to-db.sqlite3]",
-		 args.get(0).unwrap_or(&"pipo".to_owned()));
-	return Ok(()) // no, don't do this
-    }
-
-    let mut config = File::open(config_path.unwrap()).await
-	.context("Couldn't open config file")?;
-    let db_pool = Config::new(&db_path.unwrap()).create_pool(Runtime::Tokio1)?;
-
-	// TODO: ugly error handling needs fixing
-    let pipo_id: Arc<Mutex<i64>>
-	= Arc::new(Mutex::new(db_pool.get().await?.interact(move |conn| -> anyhow::Result<i64> {
-	    match conn.query_row("SELECT name 
-                                  FROM sqlite_master 
-                                  WHERE type='table' 
-                                  AND name='messages'",
-				 [], |row| row.get::<usize,String>(0)) {
-		Ok(_) => eprintln!("Table found"),
-		Err(QueryReturnedNoRows) => {
-		    conn.execute_batch("CREATE TABLE messages (
-                                           id        INTEGER PRIMARY KEY,
-                                           slackid   TEXT,
-                                           discordid INTEGER,
-                                           modtime   DEFAULT 
-                                             (strftime('%Y-%m-%d %H:%M:%S:%s',
-                                                       'now', 
-                                                       'localtime'))
-                                           );
-                                        CREATE TRIGGER updatemodtime
-                                        BEFORE update ON messages
-                                        begin
-                                        update messages set modtime 
-                                          = strftime('%Y-%m-%d %H:%M:%S:%s',
-                                                     'now', 
-                                                     'localtime') 
-                                            where id = old.id;
-                                        end;")?;
-		},
-		Err(e) => return Err(anyhow!(e))
-	    }
-
-	    Ok(match conn.query_row("SELECT id FROM messages 
-                                     ORDER BY modtime DESC",
-				    [], |row| row.get(0)) {
-		Ok(id) => id,
-		Err(_) => 0
-	    })
-	}).await.unwrap_or_else(|_| Err(anyhow!("Interact Error")))? + 1));
-
-    // Parse JSON
-    let mut read_buf = Vec::new();
-    config.read_to_end(&mut read_buf).await
-	.context("Couldn't read config file")?;
-    let comment_removal_regex = Regex::new("//[^\n\r]*").unwrap();
-   
-    // do the rest
-    let read_buf = comment_removal_regex.replace_all(&read_buf, &b""[..]);
-    
-    let config_json: ParsedConfig = serde_json::from_slice(&read_buf[..])
-	.context("Couldn't parse the JSON in the config file")?;
-
-    // Once the configuration JSON has been deserialized into a
-    // ParsedConfig, iterate through buses, creating a mpsc channel
-    // for each.
-    // let mut bus_map: HashMap<Arc<Bus>, (mpsc::Sender<Message>, mpsc::Receiver<Message>)> = HashMap::new();
-    let mut bus_map = HashMap::new();
-    let mut bus_id_map = HashMap::new();
-    for (i, bus) in config_json.buses.into_iter().enumerate() {
-        bus_id_map.insert(bus.id.clone(), i);
-        let bus = Arc::new(Bus {
-            id: i,
-            name: bus.id,
-            subscribers: vec![],
-        });
-	bus_map.insert(bus.id, bus);
-    }
-
-    let subscribers = Subscribers::new();
-
-    // Create Sender and Receiver for database mpsc channel
-    // let (db_tx, mut db_rx): (mpsc::Sender<(String, String)>,
-    // 			     mpsc::Receiver<(String, String)>)
-    // 	= mpsc::channel(100);
-    
-    // Now do transports and create a ???
-    // for each.
-
-    let mut all_transport_tasks = vec![];
-    // let handle = tokio::spawn(async move {
-    // 	while let Some((command, message)) = db_rx.recv().await {
-    // 	    match command.as_str() {
-    // 		"execute" => if let Err(e) = db.execute(&message, []) {
-    // 		    eprintln!("Error executing db command: {}", e);
-    // 		},
-    // 		default => eprintln!("{} not implemented.", default)
-    // 	    }
-    // 	}
-    // });
-
-    // all_transport_tasks.push(handle);
-    
-    let (router_tx, router_rx) = mpsc::channel(10);
-    let mut transport_map = HashMap::new();
-    for transport_id in 0..config_json.transports.len() {
-        let (inbox_tx, inbox_rx) = mpsc::channel(100);
-        let transport = Transport { id: transport_id };
-	match &config_json.transports[transport_id] {
-	    ConfigTransport::IRC {
-		nickname,
-		server,
-		use_tls,
-		img_root,
-		channel_mapping
-	    } => {
-                let channel_mapping = channel_mapping
-                    .iter()
-                    .filter_map(|(c, b)| {
-                        bus_id_map.get(&**b)
-                            .and_then(|x| bus_map.get(x))
-                            .map(|x| (c.clone(), x.clone()))
-                    })
-                    .collect();
-		// tokio::spawn maybe?
-		let mut instance = IRC::new(router_tx.clone(),
-                                            inbox_rx,
-					    pipo_id.clone(),
-					    db_pool.clone(),
-					    nickname.to_string(),
-					    server.to_string(),
-					    *use_tls,
-					    &img_root,
-					    &channel_mapping,
-					    transport_id).await?;
-		// you should push enough state to connect the spawned
-		// transport to all its buses... you don't need to push
-		// the task itself, tokio will track that
-
-		// let spawn take care of it... as in, the loop will continue
-		// while spawn does its thing why don't the comments continue
-		// automatically on the new line???
-		let handle = tokio::spawn(async move {
-		    match instance.connect().await {
-			Ok(_) => eprintln!("IRC::connect() exited Ok"),
-			Err(e) => {
-			    eprintln!("IRC::connect() exited with Error: {:#}",
-				      e);
-			}
-		    }
-		});
-		all_transport_tasks.push(handle);
-	    }
-	    ConfigTransport::Discord {
-		token,
-		guild_id,
-		channel_mapping
-	    } => {
-                let channel_mapping = channel_mapping
-                    .iter()
-                    .filter_map(|(c, b)| {
-                        bus_id_map.get(&**b)
-                            .and_then(|x| bus_map.get(x))
-                            .map(|x| (c.clone(), x.clone()))
-                    })
-                    .collect();
-		let mut instance = Discord::new(transport_id,
-                                                router_tx.clone(),
-                                                inbox_rx,
-						pipo_id.clone(),
-						db_pool.clone(),
-						token.to_string(),
-						*guild_id,
-						&channel_mapping).await?;
-		let handle = tokio::spawn(async move {
- 		    match instance.connect().await {
-			Ok(_) => eprintln!("Discord::connect() exited Ok"),
-			Err(e) => {
-			    eprintln!("Discord::connect() exited with \
-				       Error: {:#}", e);
-			}
-		    }
-		});
-		all_transport_tasks.push(handle);},
-	    ConfigTransport::Slack {
-		token,
-		bot_token,
-		channel_mapping
-	    } => {
-                let channel_mapping = channel_mapping
-                    .iter()
-                    .filter_map(|(c, b)| {
-                        bus_id_map.get(&**b)
-                            .and_then(|x| bus_map.get(x))
-                            .map(|x| (c.clone(), x.clone()))
-                    })
-                    .collect();
-		let mut instance = Slack::new(transport_id,
-                                              router_tx.clone(),
-                                              inbox_rx,
-					      pipo_id.clone(),
-					      db_pool.clone(),
-					      token.to_string(),
-					      bot_token.to_string(),
-					      &channel_mapping).await?;
-		let handle = tokio::spawn(async move {
-		    match instance.connect().await {
-			Ok(_) => eprintln!("Slack::connect() exited Ok"),
-			Err(e) => {
-			    eprintln!("Slack::connect() exited with Error: \
-				       {:#}", e);
-			}
-		    }
-		});
-		all_transport_tasks.push(handle);
-	    },
-	    ConfigTransport::Minecraft {
-		username: _,
-		buses: _
-	    } => todo!("Minecraft"),
-	    ConfigTransport::Mumble {
-		server,
-		password,
-		nickname,
-		client_cert,
-		server_cert,
-		comment, 
-		channel_mapping,
-		voice_channel_mapping
-	    } => {
-                let channel_mapping = channel_mapping
-                    .iter()
-                    .filter_map(|(c, b)| {
-                        bus_id_map.get(&**b)
-                            .and_then(|x| bus_map.get(x))
-                            .map(|x| (c.clone(), x.clone()))
-                    })
-                    .collect();
-                let mut instance = Mumble::new(transport_id,
-                                               server.clone(),
-                                               password.clone(),
-                                               nickname.clone(),
-                                               client_cert.clone(),
-                                               server_cert.clone(),
-                                               comment.as_deref(),
-                                               router_tx.clone(),
-                                               inbox_rx,
-                                               &channel_mapping,
-                                               &voice_channel_mapping,
-                                               pipo_id.clone(),
-                                               db_pool.clone()).await?;
-                let handle = tokio::spawn(async move {
-                    match instance.run().await {
-                        Ok(_) => eprintln!("Mumble::run() exited Ok"),
-                        Err(e) => {
-                            eprintln!("Mumble::run() exited with Error: \
-                                       {:#}", e)
-                        }
-                    }
-                });
-                all_transport_tasks.push(handle);
+                username: _,
+                avatar_url: _,
+                thread: _,
+                message,
+                attachments: _,
+                is_edit: _,
+                irc_flag: _,
+            } => match message {
+                Some(message) => write!(f, "{}", message),
+                None => write!(f, "Empty message"),
             },
-	    ConfigTransport::Rachni {
-		server,
-		api_key,
-		interval,
-		buses
-	    } => {
-                let buses = buses
-                    .iter()
-                    .filter_map(|b| {
-                        bus_id_map.get(&**b)
-                            .and_then(|x| bus_map.get(x))
-                            .cloned()
-                    })
-                    .collect();
-		let instance = Rachni::new(transport_id,
-                                           router_tx.clone(),
-					   &server,
-					   &api_key,
-					   *interval,
-					   &buses,
-					   db_pool.clone(),
-					   pipo_id.clone()).await?;
-		let handle = tokio::spawn(async move {
-		    match instance.run().await {
-			Ok(_) => eprintln!("Rachni::run() exited Ok"),
-			Err(e) => {
-			    eprintln!("Rachni::run() exited with Error: \
-				       {:#}", e);
-			}
-		    }
-		});
-		all_transport_tasks.push(handle);
-	    }
-	}
-        transport_map.insert(transport_id, inbox_tx);
-    }
-
-    let subscribers = Arc::new(Mutex::new(subscribers));
-    let buses = Arc::new(bus_map);
-    tokio::spawn(router(transport_map, router_rx));
-
-    for task in all_transport_tasks {
-	match task.await {
-	    Ok(_) => (),
-	    Err(e) => eprintln!("Task error: {:#}", e)
-	}
-    }
-
-    Ok(())
-}
-
-async fn router(transport_map: HashMap<TransportId,mpsc::Sender<Message>>,
-                mut rx: mpsc::Receiver<(Message,TransportId)>) {
-    while let Some((message, transport_id)) = rx.recv().await {
-        for (id, tx) in transport_map.iter() {
-            if *id == transport_id { continue; }
-            let message = message.clone();
-            let tx = tx.clone();
-            tokio::spawn(async move { tx.send(message).await });
+            Message::Bot {
+                sender: _,
+                pipo_id: _,
+                transport: _,
+                bus: _,
+                message,
+                attachments: _,
+                is_edit: _,
+            } => match message {
+                Some(message) => write!(f, "{}", message),
+                None => write!(f, "Empty message"),
+            },
+            Message::Delete {
+                sender: _,
+                pipo_id: _,
+                transport: _,
+                bus: _,
+            } => write!(f, "Delete message"),
+            Message::Names {
+                sender: _,
+                transport: _,
+                bus: _,
+                username: _,
+                message,
+            } => match message {
+                Some(message) => write!(f, "{}", message),
+                None => write!(f, "Empty message"),
+            },
+            Message::Pin {
+                sender: _,
+                pipo_id: _,
+                bus: _,
+                remove: _,
+            } => write!(f, "Pin message"),
+            Message::Reaction {
+                sender: _,
+                pipo_id: _,
+                transport: _,
+                bus: _,
+                emoji,
+                remove: _,
+                username: _,
+                avatar_url: _,
+                thread: _,
+            } => write!(f, ":{}:", emoji),
+            Message::Text {
+                sender: _,
+                pipo_id: _,
+                transport: _,
+                bus: _,
+                username: _,
+                avatar_url: _,
+                thread: _,
+                message,
+                attachments: _,
+                is_edit: _,
+                irc_flag: _,
+            } => match message {
+                Some(message) => write!(f, "{}", message),
+                None => write!(f, "Empty Message"),
+            },
         }
     }
 }
 
+#[derive(Deserialize, Debug)]
+pub struct ConfigBus {
+    pub id: String,
+}
 
+#[derive(Deserialize, Debug)]
+#[serde(tag = "transport")]
+pub enum ConfigTransport {
+    IRC {
+        nickname: Arc<String>,
+        server: Arc<String>,
+        use_tls: bool,
+        img_root: Arc<String>,
+        channel_mapping: HashMap<Arc<String>, Arc<String>>,
+    },
+    Discord {
+        token: Arc<String>,
+        guild_id: u64,
+        channel_mapping: HashMap<Arc<String>, Arc<String>>,
+    },
+    Slack {
+        token: Arc<String>,
+        bot_token: Arc<String>,
+        channel_mapping: HashMap<Arc<String>, Arc<String>>,
+    },
+    Minecraft {
+        username: Arc<String>,
+        buses: Vec<Arc<String>>,
+    },
+    Mumble {
+        server: Arc<String>,
+        password: Arc<Option<String>>,
+        nickname: Arc<String>,
+        client_cert: Arc<Option<String>>,
+        server_cert: Arc<Option<String>>,
+        comment: Option<String>,
+        channel_mapping: HashMap<Arc<String>, Arc<String>>,
+        voice_channel_mapping: HashMap<Arc<String>, Arc<String>>,
+    },
+    Rachni {
+        server: Arc<String>,
+        api_key: Arc<String>,
+        interval: u64,
+        buses: Arc<Vec<String>>,
+    },
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ParsedConfig {
+    pub buses: Vec<ConfigBus>,
+    pub transports: Vec<ConfigTransport>,
+}
+
+#[derive(Clone)]
+pub(crate) struct Router(TransportId, mpsc::Sender<(Message, TransportId)>);
+
+impl Router {
+    pub async fn send(&self, message: Message) -> Result<(), SendError<(Message, TransportId)>> {
+        self.1.send((message, self.0)).await
+    }
+}
+
+pub trait Transport {
+    fn start(self) -> JoinHandle<()>;
+}
