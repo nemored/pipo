@@ -236,6 +236,7 @@ struct MessageSource {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
 pub enum Message {
     Action {
         sender: usize,

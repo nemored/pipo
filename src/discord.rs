@@ -22,10 +22,16 @@ use serenity::{
     prelude::*,
     utils::MessageBuilder,
 };
-use tokio::{sync::{mpsc, Mutex as AsyncMutex}, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, Mutex as AsyncMutex},
+    task::JoinHandle,
+};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 
-use crate::{Bus, Database, Message, MessageId, Router, TransportId, slack::SlackId, objects::Timestamp as SlackTimestamp, Transport};
+use crate::{
+    objects::Timestamp as SlackTimestamp, slack::SlackId, Bus, Database, Message, MessageId,
+    Router, Transport, TransportId,
+};
 
 const TRANSPORT_NAME: &'static str = "Discord";
 
@@ -37,9 +43,9 @@ pub(crate) struct DiscordId {
 }
 
 impl DiscordId {
-	pub fn as_u64(&self) -> &u64 {
-		self.message_id.as_u64()
-	}
+    pub fn as_u64(&self) -> &u64 {
+        self.message_id.as_u64()
+    }
 }
 
 impl Display for DiscordId {
@@ -79,9 +85,9 @@ impl MessageId for DiscordId {
 }
 
 impl From<DiscordId> for u64 {
-	fn from(value: DiscordId) -> Self {
-		value.message_id.0
-	}
+    fn from(value: DiscordId) -> Self {
+        value.message_id.0
+    }
 }
 
 impl From<DiscordId> for SerenityMessageId {
@@ -95,7 +101,7 @@ pub struct Discord {
     token: String,
     guild: GuildId,
     shared: Arc<Shared>,
-    inbox: ReceiverStream<Message>,
+    inbox: mpsc::Receiver<Message>,
     database: Option<Database>,
     cache_http: Option<Arc<dyn CacheHttp>>,
 }
@@ -254,10 +260,10 @@ impl RealHandler {
         let pins = match channel_id.pins(http).await {
             Ok(pins) => pins,
             Err(e) => {
-                eprintln!(
-                    "Failed to retrieve pins for channel {:#}: {}",
-                    channel_id, e
-                );
+                // eprintln!(
+                //     "Failed to retrieve pins for channel {:#}: {}",
+                //     channel_id, e
+                // );
 
                 return;
             }
@@ -270,11 +276,11 @@ impl RealHandler {
                 let pipo_id = match self.try_select_id_from_messages(message).await {
                     Ok(id) => id,
                     Err(e) => {
-                        eprintln!(
-                            "Couldn't retrieve  pipo_id for SerenityMessageId {:#}: \
-			           {}",
-                            message, e
-                        );
+                        // eprintln!(
+                    //         "Couldn't retrieve  pipo_id for SerenityMessageId {:#}: \
+			        //    {}",
+                    //         message, e
+                    //     );
 
                         continue;
                     }
@@ -287,10 +293,10 @@ impl RealHandler {
                     remove: true,
                 };
 
-                eprintln!("Discord: Removing pin...");
+                // eprintln!("Discord: Removing pin...");
 
                 if let Err(e) = sender.send(message).await {
-                    eprintln!("Failed to send message: {}", e);
+                    // eprintln!("Failed to send message: {}", e);
                 }
             }
 
@@ -298,11 +304,11 @@ impl RealHandler {
                 let pipo_id = match self.try_select_id_from_messages(message).await {
                     Ok(id) => id,
                     Err(e) => {
-                        eprintln!(
-                            "Couldn't retrieve  pipo_id for SerenityMessageId {:#}: \
-			           {}",
-                            message, e
-                        );
+                        // eprintln!(
+                    //         "Couldn't retrieve  pipo_id for SerenityMessageId {:#}: \
+			        //    {}",
+                    //         message, e
+                    //     );
 
                         continue;
                     }
@@ -315,10 +321,10 @@ impl RealHandler {
                     remove: false,
                 };
 
-                eprintln!("Discord: Adding pin...");
+                // eprintln!("Discord: Adding pin...");
 
                 if let Err(e) = sender.send(message).await {
-                    eprintln!("Failed to send message: {}", e);
+                    // eprintln!("Failed to send message: {}", e);
                 }
             }
         }
@@ -346,7 +352,7 @@ impl RealHandler {
                         {
                             Ok(webhook) => webhook,
                             Err(e) => {
-                                eprintln!("Couldn't create Webhook: {}", e);
+                                // eprintln!("Couldn't create Webhook: {}", e);
 
                                 continue;
                             }
@@ -356,7 +362,7 @@ impl RealHandler {
                     self.shared.set_webhook(&channel_id, &webhook.id);
                 }
                 Err(e) => {
-                    eprintln!("Couldn't get Webhooks for channel {}: {}", channel_id, e);
+                    // eprintln!("Couldn't get Webhooks for channel {}: {}", channel_id, e);
 
                     continue;
                 }
@@ -365,7 +371,7 @@ impl RealHandler {
 
         // Setup threads
         for thread in guild.threads {
-            eprintln!("Thread: {}", thread);
+            // eprintln!("Thread: {}", thread);
             if let Some(channel_id) = thread.parent_id {
                 // If this is a followed channel...
                 if let Some(_) = self.shared.get_channel(channel_id) {
@@ -375,7 +381,7 @@ impl RealHandler {
             }
         }
 
-        eprintln!("Threads: {}", self.shared.format_threads());
+        // eprintln!("Threads: {}", self.shared.format_threads());
     }
 
     async fn message(&mut self, ctx: Context, msg: SerenityMessage) {
@@ -383,7 +389,7 @@ impl RealHandler {
         // authentication error, or lack of permissions to post in the
         // channel, so log to stdout when some error happens, with a
         // description of it.
-        eprintln!("Author: {:#?}", msg.author);
+        // eprintln!("Author: {:#?}", msg.author);
         let http = CacheHttp::http(&ctx);
         if msg.author.bot {
             return;
@@ -412,11 +418,11 @@ impl RealHandler {
             let pipo_id = match self.try_insert_into_messages_table(&msg).await {
                 Ok(id) => id,
                 Err(e) => {
-                    eprintln!(
-                        "Failed to add message to database: \
-				   {}",
-                        e
-                    );
+                    // eprintln!(
+                //         "Failed to add message to database: \
+				//    {}",
+                //         e
+                //     );
 
                     return;
                 }
@@ -433,7 +439,7 @@ impl RealHandler {
             {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("Error parsing content: {}", e);
+                    // eprintln!("Error parsing content: {}", e);
                     content
                 }
             };
@@ -446,16 +452,16 @@ impl RealHandler {
             let id = 0;
 
             if let Some(reply) = msg.referenced_message {
-                eprintln!("Reply: {}", reply.id);
+                // eprintln!("Reply: {}", reply.id);
                 let mut fallback = None;
                 let pipo_id = match self.try_select_id_from_messages(reply.as_ref()).await {
                     Ok(id) => id,
                     Err(e) => {
-                        eprintln!(
-                            "Failed to get id for message from \
-				       database: {}",
-                            e
-                        );
+                        // eprintln!(
+                    //         "Failed to get id for message from \
+				    //    database: {}",
+                    //         e
+                    //     );
 
                         return;
                     }
@@ -533,10 +539,10 @@ impl RealHandler {
                 };
 
                 if let Err(e) = sender.send(message).await {
-                    eprintln!("Couldn't send message {:#}", e);
+                    // eprintln!("Couldn't send message {:#}", e);
                 }
             } else {
-                eprintln!("No bus for channel {channel_id}");
+                // eprintln!("No bus for channel {channel_id}");
             }
         }
     }
@@ -628,11 +634,11 @@ impl RealHandler {
             let pipo_id = match self.try_select_id_from_messages(msg.id).await {
                 Ok(id) => id,
                 Err(e) => {
-                    eprintln!(
-                        "Failed to select id from database: \
-				   {}",
-                        e
-                    );
+                    // eprintln!(
+                //         "Failed to select id from database: \
+				//    {}",
+                //         e
+                //     );
 
                     return;
                 }
@@ -651,7 +657,7 @@ impl RealHandler {
             {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("Error parsing content: {}", e);
+                    // eprintln!("Error parsing content: {}", e);
                     content
                 }
             };
@@ -699,10 +705,10 @@ impl RealHandler {
                 };
 
                 if let Err(e) = sender.send(message).await {
-                    eprintln!("Couldn't send message {:#}", e);
+                    // eprintln!("Couldn't send message {:#}", e);
                 }
             } else {
-                eprintln!("No bus for channel {channel_id}");
+                // eprintln!("No bus for channel {channel_id}");
             }
         }
     }
@@ -715,7 +721,7 @@ impl RealHandler {
                 return;
             }
 
-            eprintln!("New Thread: {:?}", thread);
+            // eprintln!("New Thread: {:?}", thread);
 
             // Finally, add the ID's of the thread and its parent to
             // the thread map and create a new webhook for the thread.
@@ -724,7 +730,7 @@ impl RealHandler {
     }
 
     async fn thread_update(&mut self, _ctx: Context, thread: GuildChannel) {
-        eprintln!("Updated Thread: {:?}", thread);
+        // eprintln!("Updated Thread: {:?}", thread);
 
         if thread.thread_metadata.unwrap().archived {}
     }
@@ -736,7 +742,7 @@ impl RealHandler {
         let channel = match reaction.channel_id.to_channel(&ctx).await {
             Ok(channel) => channel,
             Err(e) => {
-                eprintln!("Error getting channel: {:?}", e);
+                // eprintln!("Error getting channel: {:?}", e);
 
                 return;
             }
@@ -753,7 +759,7 @@ impl RealHandler {
             let pipo_id = match self.try_select_id_from_messages(message_id).await {
                 Ok(id) => id,
                 Err(e) => {
-                    eprintln!("Failed to select id from databbase: {}", e);
+                    // eprintln!("Failed to select id from databbase: {}", e);
 
                     return;
                 }
@@ -798,11 +804,11 @@ impl RealHandler {
                     };
 
                     if let Err(e) = sender.send(message).await {
-                        eprintln!("Couldn't send message {:#}", e);
+                        // eprintln!("Couldn't send message {:#}", e);
                     }
                 }
             } else {
-                eprintln!("No bus for channel {channel_id}");
+                // eprintln!("No bus for channel {channel_id}");
             }
         }
     }
@@ -814,7 +820,7 @@ impl RealHandler {
         let channel = match reaction.channel_id.to_channel(&ctx).await {
             Ok(channel) => channel,
             Err(e) => {
-                eprintln!("Error getting channel: {:?}", e);
+                // eprintln!("Error getting channel: {:?}", e);
 
                 return;
             }
@@ -831,7 +837,7 @@ impl RealHandler {
             let pipo_id = match self.try_select_id_from_messages(message_id).await {
                 Ok(id) => id,
                 Err(e) => {
-                    eprintln!("Failed to select id from databbase: {}", e);
+                    // eprintln!("Failed to select id from databbase: {}", e);
 
                     return;
                 }
@@ -876,17 +882,17 @@ impl RealHandler {
                     };
 
                     if let Err(e) = sender.send(message).await {
-                        eprintln!("Couldn't send message {:#}", e);
+                        // eprintln!("Couldn't send message {:#}", e);
                     }
                 }
             } else {
-                eprintln!("No bus for channel {channel_id}");
+                // eprintln!("No bus for channel {channel_id}");
             }
         }
     }
 
     async fn ready(&mut self, _: Context, ready: Ready) {
-        println!("{} is connected!", ready.user.name);
+        // eprintln!("{} is connected!", ready.user.name);
     }
 }
 
@@ -943,7 +949,7 @@ impl RealHandler {
         let pipo_id = match self.try_select_id_from_messages(message_id).await {
             Ok(id) => id,
             Err(e) => {
-                eprintln!("Failed to select id from database: {}", e);
+                // eprintln!("Failed to select id from database: {}", e);
 
                 return;
             }
@@ -956,10 +962,10 @@ impl RealHandler {
                 bus: bus.to_owned(),
             };
             if let Err(e) = sender.send(message).await {
-                eprintln!("Couldn't send message {:#}", e);
+//                // eprintln!("Couldn't send message {:#}", e);
             }
         } else {
-            eprintln!("No bus for channel {}", channel_id);
+//            // eprintln!("No bus for channel {}", channel_id);
         }
     }
 
@@ -1336,7 +1342,7 @@ impl EventHandler for Handler {
     }
 
     async fn channel_create(&self, _ctx: Context, channel: &GuildChannel) {
-        eprintln!("New channel: {}", channel);
+//        // eprintln!("New channel: {}", channel);
     }
 
     async fn channel_pins_update(&self, ctx: Context, pins: ChannelPinsUpdateEvent) {
@@ -1348,7 +1354,7 @@ impl EventHandler for Handler {
     }
 
     async fn channel_update(&self, _ctx: Context, channel: Channel) {
-        eprintln!("Channel updated: {}", channel);
+//        // eprintln!("Channel updated: {}", channel);
     }
 
     async fn guild_create(&self, ctx: Context, guild: Guild) {
@@ -1451,8 +1457,8 @@ impl Transport for Discord {
     fn start(mut self) -> JoinHandle<()> {
         tokio::spawn(async move {
             match self.connect().await {
-                Ok(_) => eprintln!("IRC::connect() exited Ok"),
-                Err(e) => eprintln!("IRC::connect() exited with Error: {e:#}"),
+                Ok(_) => eprintln!("Discord::connect() exited Ok"),
+                Err(e) => eprintln!("Discord::connect() exited with Error: {e:#}"),
             }
         })
     }
@@ -1468,7 +1474,7 @@ impl Discord {
         guild_id: u64,
         channel_mapping: &HashMap<Arc<String>, Arc<Bus>>,
     ) -> anyhow::Result<Discord> {
-        let inbox = ReceiverStream::new(inbox);
+        // let inbox = ReceiverStream::new(inbox);
         let router = Router(transport_id, router);
         let channels = channel_mapping
             .iter()
@@ -1574,7 +1580,7 @@ impl Discord {
                 // If not,
                 // create a
                 // new Discord thread from the `SerenityMessageId`.
-                eprintln!("found disid: {}", id);
+                // eprintln!("found disid: {}", id);
                 if self.shared.contains_thread(id.as_u64()) {
                     return Ok(ChannelId::from(*id.as_u64()));
                 }
@@ -1700,11 +1706,11 @@ impl Discord {
         } else {
             let id = self.shared.get_webhook_id(channel);
 
-            eprintln!("Webhook ID: {:?}", id);
+            // eprintln!("Webhook ID: {:?}", id);
 
             if let Some(id) = id {
                 if let Ok(wh) = id.to_webhook(http).await {
-                    eprintln!("Webhook: {:?}", wh);
+                    // eprintln!("Webhook: {:?}", wh);
                     if let Ok(msg) = wh
                         .execute(http, true, |f| {
                             let ret = f.content(content.clone()).username(format!(
@@ -1716,13 +1722,13 @@ impl Discord {
                                 ret.avatar_url(url);
                             }
 
-                            eprintln!("Message content: {:?}", ret);
+                            // eprintln!("Message content: {:?}", ret);
 
                             ret
                         })
                         .await
                     {
-                        eprintln!("Message: {:?}", msg);
+                        // eprintln!("Message: {:?}", msg);
                         return if let Some(pipo_id) = pipo_id {
                             self.try_update_messages_table(pipo_id, msg.unwrap())
                                 .await
@@ -1925,11 +1931,11 @@ impl Discord {
         } else {
             let id = self.shared.get_webhook_id(channel);
 
-            eprintln!("Webhook ID: {:?}", id);
+            // eprintln!("Webhook ID: {:?}", id);
 
             if let Some(id) = id {
                 if let Ok(wh) = id.to_webhook(http).await {
-                    eprintln!("Webhook: {:?}", wh);
+                    // eprintln!("Webhook: {:?}", wh);
                     if let Ok(msg) = wh
                         .execute(http, true, |f| {
                             let ret = f.content(content.clone()).username(format!(
@@ -1941,13 +1947,13 @@ impl Discord {
                                 ret.avatar_url(url);
                             }
 
-                            eprintln!("Message content: {:?}", ret);
+                            // eprintln!("Message content: {:?}", ret);
 
                             ret
                         })
                         .await
                     {
-                        eprintln!("Message: {:?}", msg);
+                        // eprintln!("Message: {:?}", msg);
                         return if let Some(pipo_id) = pipo_id {
                             self.try_update_messages_table(pipo_id, msg.unwrap())
                                 .await
@@ -2000,7 +2006,7 @@ impl Discord {
 
         loop {
             tokio::select! {
-            stream = self.inbox.next() => {
+            stream = self.inbox.recv() => {
                 match stream {
                 Some(message) => {
                     match message {
@@ -2008,7 +2014,7 @@ impl Discord {
                         sender: _,
                         pipo_id,
                         transport,
-                                        bus,
+                        bus,
                         username,
                         avatar_url,
                         thread: _,
@@ -2027,13 +2033,13 @@ impl Discord {
                                            message,
                                            is_edit)
                             .await {
-                                eprintln!("Error handling \
-                                       Message::Action: \
-                                       {}", e);
+                                // eprintln!("Error handling \
+                                    //    Message::Action: \
+                                    //    {}", e);
                             }
                                         },
                                         None => {
-                                            eprintln!("No channel for bus {}", bus.name);
+                                            // eprintln!("No channel for bus {}", bus.name);
                                         }
                     },
                     Message::Bot {
@@ -2059,13 +2065,13 @@ impl Discord {
                             .handle_delete_message(channel_id,
                                        pipo_id)
                             .await {
-                            eprintln!("Error handling \
-                                   Message::Delete: \
-                                   {}", e);
+                            // eprintln!("Error handling \
+                                //    Message::Delete: \
+                                //    {}", e);
                             }
                                         }
                                         None => {
-                                            eprintln!("No channel for bus {}", bus.name);
+                                            // eprintln!("No channel for bus {}", bus.name);
                                         }
                     },
                     Message::Names {
@@ -2087,11 +2093,11 @@ impl Discord {
                         .handle_pin_message(channel_id,
                                     pipo_id,
                                     remove).await {
-                            eprintln!("Error handling \
-                                   Message::Pin: {}", e);
+                            // eprintln!("Error handling \
+                                //    Message::Pin: {}", e);
                         },
                                         None => {
-                                            eprintln!("No channel for bus {}", bus.name);
+                                            // eprintln!("No channel for bus {}", bus.name);
                                         }
                     },
                     Message::Reaction {
@@ -2112,12 +2118,12 @@ impl Discord {
                                      emoji,
                                      remove)
                         .await {
-                            eprintln!("Error handling \
-                                   Message::Reaction: \
-                                   {}", e);
+                            // eprintln!("Error handling \
+                                //    Message::Reaction: \
+                                //    {}", e);
                         },
                                         None => {
-                                            eprintln!("No channel for bus {}", bus.name);
+                                            // eprintln!("No channel for bus {}", bus.name);
                         }
                     },
                     Message::Text {
@@ -2144,12 +2150,12 @@ impl Discord {
                                      attachments,
                                      is_edit)
                         .await {
-                            eprintln!("Error handling \
-                                   Message::Text: \
-                                   {}", e);
+                            // eprintln!("Error handling \
+                                //    Message::Text: \
+                                //    {}", e);
                         },
                                         None => {
-                                            eprintln!("No channel for bus {}", bus.name);
+                                            // eprintln!("No channel for bus {}", bus.name);
                         }
                     },
                     }
