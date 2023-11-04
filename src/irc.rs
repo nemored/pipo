@@ -74,6 +74,7 @@ impl Transport for IRC {
 
 impl IRC {
     pub async fn new(
+        transport_id: TransportId,
         router: mpsc::Sender<(Message, TransportId)>,
         inbox: mpsc::Receiver<Message>,
         database: Option<Database>,
@@ -82,7 +83,6 @@ impl IRC {
         use_tls: bool,
         img_root: &str,
         channel_map: &HashMap<Arc<String>, Arc<Bus>>,
-        transport_id: TransportId,
     ) -> anyhow::Result<IRC> {
         let inbox = ReceiverStream::new(inbox);
         let channel_map: HashMap<String, Arc<Bus>> = channel_map

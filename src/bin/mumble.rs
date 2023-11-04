@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use bytes::BytesMut;
-use pipo::{Bus, Discord, Message, Transport};
+use pipo::{Bus, Mumble, Message, Transport};
 use serde::Deserialize;
 use tokio::{
     io::AsyncReadExt,
@@ -10,9 +10,14 @@ use tokio::{
 
 #[derive(Debug, Deserialize, serde::Serialize)]
 struct Hello {
-    token: String,
-    guild_id: u64,
+    server: Arc<String>,
+    password: Arc<Option<String>>,
+    nickname: Arc<String>,
+    client_cert: Arc<Option<String>>,
+    server_cert: Arc<Option<String>>,
+    comment: Option<String>,
     channel_mapping: HashMap<Arc<String>, Arc<Bus>>,
+    voice_channel_mapping: HashMap<Arc<String>, Arc<String>>,
 }
 
 #[derive(Debug)]
@@ -76,14 +81,19 @@ async fn main() -> Result<()> {
         let _ = stdin.read_buf(&mut read_buf).await?;
         serde_json::from_slice(&read_buf.split())?
     };
-    let _ = Discord::new(
+    let _ = Mumble::new(
         0,
+        hello.server,
+        hello.password,
+        hello.nickname,
+        hello.client_cert,
+        hello.server_cert,
+        hello.comment.as_deref(),
         router_tx,
         inbox_rx,
-        None,
-        hello.token.clone(),
-        hello.guild_id,
         &hello.channel_mapping,
+        &hello.voice_channel_mapping,
+        None,
     )
     .await?
     .start();

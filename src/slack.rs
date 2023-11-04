@@ -219,12 +219,12 @@ impl Slack {
                                        attachments,
                                        is_edit)
                         .await {
-                        eprintln!("Failed to post message:\
-                               {}", e);
+                        // eprintln!("Failed to post message:\
+                        //        {}", e);
                         }
                     }
                                 else {
-                                    eprintln!("No channel for bus {}", bus.name);
+                                    // eprintln!("No channel for bus {}", bus.name);
                                 },
                     Message::Bot {
                     sender: _,
@@ -242,12 +242,12 @@ impl Slack {
                                 attachments,
                                 is_edit)
                     .await {
-                        eprintln!("Failed to post message:\
-                               {}", e);
+                        // eprintln!("Failed to post message:\
+                        //        {}", e);
                     }
                     }
                                 else {
-                                    eprintln!("No channel for bus {}", bus.name);
+                                    // eprintln!("No channel for bus {}", bus.name);
                                 },
                     Message::Delete {
                     sender: _,
@@ -258,12 +258,12 @@ impl Slack {
                     if let Err(e)
                         = self.delete_message(pipo_id,
                                   &channel).await {
-                        eprintln!("Couldn't delete \
-                               message: {}", e);
+                        // eprintln!("Couldn't delete \
+                        //        message: {}", e);
                         }
                     }
                                 else {
-                                    eprintln!("No channel for bus {}", bus.name);
+                                    // eprintln!("No channel for bus {}", bus.name);
                                 },
                     Message::Names {
                     sender: _,
@@ -278,12 +278,12 @@ impl Slack {
                                       username,
                                       message)
                         .await {
-                        eprintln!("Failed to post message:\
-                               {}", e);
+                        // eprintln!("Failed to post message:\
+                        //        {}", e);
                         }
                     }
                                 else {
-                                    eprintln!("No channel for bus {}", bus.name);
+                                    // eprintln!("No channel for bus {}", bus.name);
                                 },
                     Message::Pin {
                     sender: _,
@@ -295,21 +295,21 @@ impl Slack {
                         if let Err(e) = self.pins_add(&channel,
                                       pipo_id)
                         .await {
-                            eprintln!("Failed to remove pin: \
-                                   {}", e)
+                            // eprintln!("Failed to remove pin: \
+                            //        {}", e)
                         }
                     }
                     else {
                         if let Err(e) = self.pins_remove(&channel,
                                          pipo_id)
                         .await {
-                            eprintln!("Failed to add pin: {}",
-                                  e)
+                            // eprintln!("Failed to add pin: {}",
+                            //       e)
                         }
                     }
                     }
                                 else {
-                                    eprintln!("No channel for bus {}", bus.name);
+                                    // eprintln!("No channel for bus {}", bus.name);
                                 },
                     Message::Reaction {
                     sender: _,
@@ -331,8 +331,8 @@ impl Slack {
                                     username,
                                     avatar_url,
                                     thread).await {
-                            eprintln!("Failed to add \
-                                   reaction: {}", e)
+                            // eprintln!("Failed to add \
+                            //        reaction: {}", e)
                         }
                     }
                     else {
@@ -345,13 +345,13 @@ impl Slack {
                                        avatar_url,
                                        thread)
                         .await {
-                            eprintln!("Failed to remove \
-                                   reaction: {}", e)
+                            // eprintln!("Failed to remove \
+                            //        reaction: {}", e)
                         }
                     }
                     }
                                 else {
-                                    eprintln!("No channel for bus {}", bus.name);
+                                    // eprintln!("No channel for bus {}", bus.name);
                                 },
                     Message::Text {
                     sender: _,
@@ -377,12 +377,12 @@ impl Slack {
                                      attachments,
                                      is_edit)
                         .await {
-                        eprintln!("Failed to post message:\
-                               {}", e);
+                        // eprintln!("Failed to post message:\
+                        //        {}", e);
                         }
                     }
                                 else {
-                                    eprintln!("No channel for bus {}", bus.name);
+                                    // eprintln!("No channel for bus {}", bus.name);
                                 }
                 }
                 }
@@ -406,12 +406,12 @@ impl Slack {
                         = self.handle_response(cid,
                                        response).await
                         {
-                        eprintln!("{}\n{}", e, message);
+                        // eprintln!("{}\n{}", e, message);
                         }
                     }
                     },
                     Some((cid, Err(e))) => {
-                    eprintln!("WebSocket error: {:#}", e);
+                    // eprintln!("WebSocket error: {:#}", e);
                     if let Some(s) = self.websocket.ws_stream
                         .remove(&cid) {
                         s.reunite(self.websocket.ws_sink.take()
@@ -1365,11 +1365,12 @@ impl Slack {
                         message: Some("/names".to_string()),
                     };
                     if let Err(e) = sender.send(message).await {
-                        eprintln!("Couldn't send message: {:#}", e);
+                        // eprintln!("Couldn't send message: {:#}", e);
                     }
                 }
             }
-            default => eprintln!("Unhandled slash command: {}", default),
+            _ => ()
+            // default => eprintln!("Unhandled slash command: {}", default),
         }
 
         Ok(())
@@ -1891,7 +1892,7 @@ impl Slack {
             Some(db) => match db.select_id_from_messages(id).await {
                 Ok(id) => id,
                 Err(e) => {
-                    eprintln!("Error#: {}", e);
+                    // eprintln!("Error#: {}", e);
                     None
                 }
             },

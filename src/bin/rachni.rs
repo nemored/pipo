@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use bytes::BytesMut;
-use pipo::{Bus, Discord, Message, Transport};
+use pipo::{Bus, Rachni, Message, Transport};
 use serde::Deserialize;
 use tokio::{
     io::AsyncReadExt,
@@ -10,9 +10,10 @@ use tokio::{
 
 #[derive(Debug, Deserialize, serde::Serialize)]
 struct Hello {
-    token: String,
-    guild_id: u64,
-    channel_mapping: HashMap<Arc<String>, Arc<Bus>>,
+    server: String,
+    api_key: String,
+    interval: u64,
+    buses: Vec<Arc<Bus>>,
 }
 
 #[derive(Debug)]
@@ -71,30 +72,23 @@ async fn main() -> Result<()> {
     let mut stdout = tokio::io::stdout();
     let mut read_buf = BytesMut::with_capacity(1024);
     let (router_tx, mut router_rx) = mpsc::channel(100);
-    let (inbox_tx, inbox_rx) = mpsc::channel(100);
     let hello: Hello = {
         let _ = stdin.read_buf(&mut read_buf).await?;
         serde_json::from_slice(&read_buf.split())?
     };
-    let _ = Discord::new(
+    let _ = Rachni::new(
         0,
         router_tx,
-        inbox_rx,
+        &hello.server,
+        &hello.api_key,
+        hello.interval,
+        &hello.buses,
         None,
-        hello.token.clone(),
-        hello.guild_id,
-        &hello.channel_mapping,
     )
     .await?
     .start();
     loop {
         tokio::select! {
-            stdin = stdin.read_buf(&mut read_buf) => {
-                if stdin? == 0 { break; }
-                // eprintln!("{:?}", &read_buf);
-                let message: Message = serde_json::from_slice(&read_buf.split())?;
-                inbox_tx.send(message).await?;
-            },
             message = router_rx.recv() => {
                 let (message, _) = message.ok_or(Error::Whatever)?;
                 // eprintln!("Got message:\n{message:?}");

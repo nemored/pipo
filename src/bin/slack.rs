@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
         tokio::select! {
             stdin = stdin.read_buf(&mut read_buf) => {
                 if stdin? == 0 { break; }
-                eprintln!("{:?}", &read_buf);
+                // eprintln!("{:?}", &read_buf);
                 let message: Message = serde_json::from_slice(&read_buf.split())?;
                 inbox_tx.send(message).await?;
             },
