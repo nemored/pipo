@@ -20,7 +20,7 @@ hmac = "0.12"
 html-escape = "0.2"
 irc = "0.15"
 lazy_static = "1.4"
-nix = "0.26"
+nix = "0.27"
 #parser = { path = "./parser" }
 protobuf = "2"
 regex = "1.7"
@@ -31,11 +31,11 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 serenity = { version = "0.11", default_features = false, features = ["chrono", "client", "gateway", "native_tls_backend", "model"] }
 sha2 = "0.10"
-tokio = { version = "1.28", features = ["full"] }
+tokio = { version = "1.35", features = ["full"] }
 tokio-rustls = "0.24"
 tokio-stream = { version = "0.1", features = ["sync"] }
-tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
-webpki-roots = "0.25"
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+webpki-roots = "0.26"
 
 [build-dependencies]
 protoc-rust = "2"
