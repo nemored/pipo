@@ -1,0 +1,16 @@
+services:
+  pipo:
+    build: .
+    configs:
+      - source: pipo_config
+        target: /etc/pipo/config.json
+    volumes:
+      - pipo-sqlite-test-data:/var/lib/pipo
+    command: pipo /etc/pipo/config.json /var/lib/pipo/db.sqlite3
+
+configs:
+  pipo_config:
+    file: ./config-test.json
+    
+volumes:
+  pipo-sqlite-test-data:

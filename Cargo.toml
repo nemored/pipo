@@ -4,13 +4,14 @@
 name = "pipo"
 version = "0.1.0"
 edition = "2021"
-authors = ["Noah Obert <nemored@gmail.com"]
+authors = ["Noah Obert <contact@noahobert.com"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 anyhow = "1.0"
 async-recursion = "1.0"
+axum = "0.7"
 bytes = "1.5"
 chrono = "0.4"
 deadpool-sqlite = "0.5"
@@ -23,12 +24,15 @@ lazy_static = "1.4"
 nix = "0.27"
 #parser = { path = "./parser" }
 protobuf = "2"
+rand = "0.8"
 regex = "1.7"
 reqwest = "0.11"
+ruma = { version = "0.9", features = ["appservice-api-c"] }
 rusqlite = "0.28"
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 serenity = { version = "0.11", default_features = false, features = ["chrono", "client", "gateway", "native_tls_backend", "model"] }
 sha2 = "0.10"
 tokio = { version = "1.36", features = ["full"] }
