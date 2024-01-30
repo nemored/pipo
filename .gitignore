@@ -5,4 +5,8 @@
 *.sqlite3
 *.json
 .DS_Store
+<<<<<<< HEAD
 .vagrant/
+=======
+.vagrant/
+>>>>>>> 208cbca (Initial commit)
