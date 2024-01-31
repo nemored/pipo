@@ -27,7 +27,8 @@ impl ServerCertVerifier for MumbleCertVerifier {
         else {
             let error = String::from("invalid peer certificate: does not match certificate loaded from server_cert file");
 
-            Err(Error::InvalidCertificateData(error))
+            // TODO: maybe this shouldn't be a General error
+            Err(Error::General(error))
         }
     }
 }
