@@ -83,4 +83,6 @@ Vagrant.configure("2") do |config|
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
   SHELL
 
+  config.vm.provision "docker" do |d|
+  end
 end
