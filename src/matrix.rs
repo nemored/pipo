@@ -65,7 +65,7 @@ impl Matrix {
             Ok(registration_file) => {
                 let mut registration: Registration = serde_yaml::from_reader(registration_file)?;
                 if &registration.id == "pipo" {
-                    registration.url = url.to_string();
+                    registration.url = Some(url.to_string());
                     registration.sender_localpart = "_pipo".to_string();
                     registration.namespaces = namespaces;
                     registration.rate_limited = Some(true);
@@ -85,7 +85,7 @@ impl Matrix {
                     let hs_token = token_generator.generate_token();
                     Ok(RegistrationInit {
                         id: "pipo".to_string(),
-                        url: url.to_string(),
+                        url: Some(url.to_string()),
                         as_token,
                         hs_token,
                         sender_localpart: "_pipo".to_string(),
@@ -106,6 +106,9 @@ impl Matrix {
             pipo_id,
             pool,
         })
+    }
+    pub async fn connect(&self) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 

@@ -4,7 +4,7 @@
 name = "pipo"
 version = "0.1.0"
 edition = "2021"
-authors = ["Noah Obert <contact@noahobert.com"]
+authors = ["Noah Obert <contact@noahobert.com>"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -19,6 +19,8 @@ emojis = "0.6"
 futures = "0.3"
 hmac = "0.12"
 html-escape = "0.2"
+http = "0.2.8"
+http-body = "0.4.5"
 irc = "0.15"
 lazy_static = "1.4"
 nix = "0.27"
@@ -27,7 +29,7 @@ protobuf = "2"
 rand = "0.8"
 regex = "1.7"
 reqwest = "0.11"
-ruma = { version = "0.9", features = ["appservice-api-c"] }
+ruma = { path = "../ruma/crates/ruma", features = ["api", "appservice-api-c", "client-api-c"] }
 rusqlite = "0.28"
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
@@ -39,7 +41,12 @@ tokio = { version = "1.36", features = ["full"] }
 tokio-rustls = "0.24"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tower-http = { version = "0.5", features = ["auth", "map-response-body", "validate-request"] }
+tower-layer = "0.3"
 webpki-roots = "0.26"
+
+[dev-dependencies]
+tower-service = "0.3.2"
 
 [build-dependencies]
 protoc-rust = "2"
