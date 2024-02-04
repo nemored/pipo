@@ -15,6 +15,7 @@ use serde_json;
 use tokio::{fs::File, io::AsyncReadExt, sync::broadcast};
 
 mod discord;
+mod http;
 mod irc;
 mod matrix;
 mod mumble;
