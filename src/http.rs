@@ -88,7 +88,7 @@ impl Http {
         self.app = self
             .app
             .clone()
-            .route("/_matrix/", get(|| async {})) // TODO: request method
+            .route("/_matrix/", get(|| async {}).fallback(unsupported_method)) // TODO: request method
             .fallback(unknown_route)
             .route_layer(ValidateRequestHeaderLayer::custom(MatrixBearer::new(
                 hs_token,
@@ -105,19 +105,33 @@ async fn unknown_route(uri: Uri) -> Response {
         message: "Unknown endpoint".to_string(),
     }
     .into_error(StatusCode::NOT_FOUND)
-        .try_into_http_response::<BytesMut>()
-        .expect("failed to construct response")
-        .map(|b| b.freeze().into())
-        .into()
+    .try_into_http_response::<BytesMut>()
+    .expect("failed to construct response")
+    .map(|b| b.freeze().into())
+    .into()
+}
+
+async fn unsupported_method(uri: Uri) -> Response {
+    ErrorBody::Standard {
+        kind: ErrorKind::Unrecognized,
+        message: "Unsupported method".to_string(),
+    }
+    .into_error(StatusCode::METHOD_NOT_ALLOWED)
+    .try_into_http_response::<BytesMut>()
+    .expect("failed to construct response")
+    .map(|b| b.freeze().into())
+    .into()
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::response::Json;
+    use axum::{body::HttpBody, response::Json};
     use serde_json::{json, Value};
     use tower_service::Service;
 
     use super::*;
+
+    const TEST_TOKEN: &'static str = "unit-test";
 
     // TODO(nemo): Clean up test
     #[tokio::test]
@@ -175,7 +189,7 @@ mod tests {
             .unwrap();
         assert_eq!(res_body, exp_body);
     }
-    
+
     #[tokio::test]
     async fn matrix_handle_unknown_endpoint() {
         let expected = Response::builder()
@@ -230,5 +244,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res_body, exp_body);
+    }
+
+    async fn test_response(hs_token: &str, request: Request<Body>, expected: Response) {
+        let mut http = Http::new();
+        http.add_matrix_route(hs_token);
+        // TODO(nemo): Decide if using tower_service::oneshot() is better
+        // than call().
+        let res = http.app.call(request).await.unwrap();
+        assert_eq!(res.status(), expected.status());
+        let res_body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let exp_body = axum::body::to_bytes(expected.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(res_body, exp_body);
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_unsupported_method() {
+        let hs_token = TEST_TOKEN;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/_matrix/")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .body(Body::new(
+                json!({ "errcode": "M_UNRECOGNIZED", "error": "Unsupported method" }).to_string(),
+            ))
+            .unwrap();
+        test_response(hs_token, request, expected).await;
     }
 }
