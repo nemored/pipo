@@ -133,119 +133,6 @@ mod tests {
 
     const TEST_TOKEN: &'static str = "unit-test";
 
-    // TODO(nemo): Clean up test
-    #[tokio::test]
-    async fn matrix_handle_invalid_token() {
-        let expected = Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .body(Json(
-                json!({ "errcode": "M_FORBIDDEN", "error": "Bad token supplied" }),
-            ))
-            .unwrap();
-        let hs_token = "abcd";
-        let request = Request::builder()
-            .method("GET")
-            .uri("/_matrix/")
-            .header(header::AUTHORIZATION, "Bearer dcba")
-            .body(Body::empty())
-            .unwrap();
-        let mut http = Http::new();
-        http.add_matrix_route(hs_token);
-        // TODO(nemo): Decide if using tower_service::oneshot() is better
-        // than call().
-        let res = http.app.call(request).await.unwrap();
-        assert_eq!(res.status(), expected.status());
-        let res_body = axum::body::to_bytes(res.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let res_json: Value = serde_json::from_slice(&res_body).unwrap();
-        assert_eq!(res_json, expected.body().0);
-    }
-
-    #[tokio::test]
-    async fn matrix_handle_valid_token() {
-        let expected = Response::builder()
-            .status(StatusCode::OK)
-            .body(Body::empty())
-            .unwrap();
-        let hs_token = "abcd";
-        let request = Request::builder()
-            .method("GET")
-            .uri("/_matrix/")
-            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
-            .body(Body::empty())
-            .unwrap();
-        let mut http = Http::new();
-        http.add_matrix_route(hs_token);
-        // TODO(nemo): Decide if using tower_service::oneshot() is better
-        // than call().
-        let res = http.app.call(request).await.unwrap();
-        assert_eq!(res.status(), expected.status());
-        let res_body = axum::body::to_bytes(res.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let exp_body = axum::body::to_bytes(expected.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert_eq!(res_body, exp_body);
-    }
-
-    #[tokio::test]
-    async fn matrix_handle_unknown_endpoint() {
-        let expected = Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Json(
-                json!({ "errcode": "M_UNRECOGNIZED", "error": "Unknown endpoint" }),
-            ))
-            .unwrap();
-        let hs_token = "test_handle_unknown_endpoint";
-        let request = Request::builder()
-            .method("GET")
-            .uri("/_matrix/unknown/")
-            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
-            .body(Body::empty())
-            .unwrap();
-        let mut http = Http::new();
-        http.add_matrix_route(hs_token);
-        // TODO(nemo): Decide if using tower_service::oneshot() is better
-        // than call().
-        let res = http.app.call(request).await.unwrap();
-        assert_eq!(res.status(), expected.status());
-        let res_body = axum::body::to_bytes(res.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let res_json: Value = serde_json::from_slice(&res_body).unwrap();
-        assert_eq!(res_json, expected.body().0);
-    }
-
-    #[tokio::test]
-    async fn matrix_handle_known_endpoint() {
-        let expected = Response::builder()
-            .status(StatusCode::OK)
-            .body(Body::empty())
-            .unwrap();
-        let hs_token = "test_handle_unknown_endpoint";
-        let request = Request::builder()
-            .method("GET")
-            .uri("/_matrix/")
-            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
-            .body(Body::empty())
-            .unwrap();
-        let mut http = Http::new();
-        http.add_matrix_route(hs_token);
-        // TODO(nemo): Decide if using tower_service::oneshot() is better
-        // than call().
-        let res = http.app.call(request).await.unwrap();
-        assert_eq!(res.status(), expected.status());
-        let res_body = axum::body::to_bytes(res.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let exp_body = axum::body::to_bytes(expected.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert_eq!(res_body, exp_body);
-    }
-
     async fn test_response(hs_token: &str, request: Request<Body>, expected: Response) {
         let mut http = Http::new();
         http.add_matrix_route(hs_token);
@@ -260,6 +147,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res_body, exp_body);
+    }
+
+    // TODO(nemo): Clean up test
+    #[tokio::test]
+    async fn matrix_handle_invalid_token() {
+        let hs_token = "abcd";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/")
+            .header(header::AUTHORIZATION, "Bearer dcba")
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(Body::new(
+                json!({ "errcode": "M_FORBIDDEN", "error": "Bad token supplied" }).to_string(),
+            ))
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_valid_token() {
+        let hs_token = "abcd";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_unknown_endpoint() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/unknown/")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::new(
+                json!({ "errcode": "M_UNRECOGNIZED", "error": "Unknown endpoint" }).to_string(),
+            ))
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_known_endpoint() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
     }
 
     #[tokio::test]
