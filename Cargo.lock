@@ -1623,6 +1623,7 @@ dependencies = [
 [[package]]
 name = "ruma"
 version = "0.9.4"
+source = "git+https://github.com/nemored/ruma?branch=http-1#7611d2f35c34832264b9d94d463728757ee542de"
 dependencies = [
  "assign",
  "js_int",
@@ -1636,6 +1637,7 @@ dependencies = [
 [[package]]
 name = "ruma-appservice-api"
 version = "0.9.0"
+source = "git+https://github.com/nemored/ruma?branch=http-1#7611d2f35c34832264b9d94d463728757ee542de"
 dependencies = [
  "js_int",
  "ruma-common",
@@ -1647,6 +1649,7 @@ dependencies = [
 [[package]]
 name = "ruma-client-api"
 version = "0.17.4"
+source = "git+https://github.com/nemored/ruma?branch=http-1#7611d2f35c34832264b9d94d463728757ee542de"
 dependencies = [
  "as_variant",
  "assign",
@@ -1665,6 +1668,7 @@ dependencies = [
 [[package]]
 name = "ruma-common"
 version = "0.12.1"
+source = "git+https://github.com/nemored/ruma?branch=http-1#7611d2f35c34832264b9d94d463728757ee542de"
 dependencies = [
  "as_variant",
  "base64 0.21.2",
@@ -1690,6 +1694,7 @@ dependencies = [
 [[package]]
 name = "ruma-events"
 version = "0.27.11"
+source = "git+https://github.com/nemored/ruma?branch=http-1#7611d2f35c34832264b9d94d463728757ee542de"
 dependencies = [
  "as_variant",
  "indexmap 2.1.0",
@@ -1711,6 +1716,7 @@ dependencies = [
 [[package]]
 name = "ruma-identifiers-validation"
 version = "0.9.3"
+source = "git+https://github.com/nemored/ruma?branch=http-1#7611d2f35c34832264b9d94d463728757ee542de"
 dependencies = [
  "js_int",
  "thiserror",
@@ -1719,6 +1725,7 @@ dependencies = [
 [[package]]
 name = "ruma-macros"
 version = "0.12.0"
+source = "git+https://github.com/nemored/ruma?branch=http-1#7611d2f35c34832264b9d94d463728757ee542de"
 dependencies = [
  "once_cell",
  "proc-macro-crate",
