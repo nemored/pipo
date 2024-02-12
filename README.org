@@ -13,6 +13,10 @@ __/\\\\\\\\\\\\\____/\\\\\\\\\\\__/\\\\\\\\\\\\\_________/\\\\\______
 
 Pipo is the discord bot ever made.
 
+** Dependencies
+protobuf-compiler
+libsqlite3-dev
+
 ** Setup
 #+BEGIN_SRC bash
 cargo run
