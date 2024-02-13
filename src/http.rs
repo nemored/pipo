@@ -5,8 +5,9 @@ use axum::{
     body::Body,
     http::{header, HeaderValue, Request, StatusCode, Uri},
     response::Response,
-    routing::get,
+    routing::{get, put, post},
     Router,
+    extract::Path,
 };
 use bytes::BytesMut;
 use ruma::api::{
@@ -88,7 +89,17 @@ impl Http {
         self.app = self
             .app
             .clone()
-            .route("/_matrix/", get(|| async {}).fallback(unsupported_method)) // TODO: request method
+            .route("/_matrix/", get(|| async {})) .fallback(unsupported_method)// TODO: request method
+            .route("/_matrix/app/v1/users/:userId", put(get_user)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/transactions/:txnId", put(get_transaction)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/rooms/:roomAlias", get(get_room)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/thirdparty/protocol/:protocol", get(get_thirdparty_protocol)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/ping", post(handle_ping)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/thirdparty/location", get(get_location)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/thirdparty/location/:protocol", get(get_location_protocol)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/thirdparty/user", get(get_thirdparty_user)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/thirdparty/user/:protocol", get(get_thirdparty_user)).fallback(unsupported_method)
+            .fallback(unsupported_method)
             .fallback(unknown_route)
             .route_layer(ValidateRequestHeaderLayer::custom(MatrixBearer::new(
                 hs_token,
@@ -98,6 +109,45 @@ impl Http {
     //     axum::serve(listener, self.app).await.unwrap();
     // }
 }
+
+
+async fn get_thirdparty_user_protocol() {
+    todo!("get tp user protocol")
+}
+
+async fn get_thirdparty_user() {
+    todo!("get tp user")
+}
+
+async fn get_location_protocol() {
+    todo!("get loc protocol")
+}
+
+async fn get_location() {
+    todo!("get location")
+}
+
+async fn handle_ping() {
+    todo!("ping")
+}
+
+async fn get_thirdparty_protocol(Path(protocol): Path<String>) -> String {
+    todo!("protocol")
+}
+
+
+async fn get_room(Path(room): Path<String>) -> String {
+    todo!("room")
+}
+
+async fn get_transaction(Path(tid): Path<String>) -> String {
+    todo!("txn")
+}
+
+async fn get_user(Path(user_id): Path<String>) -> String {
+    todo!("get user")
+}
+
 
 async fn unknown_route(uri: Uri) -> Response {
     ErrorBody::Standard {
@@ -235,4 +285,5 @@ mod tests {
             .unwrap();
         test_response(hs_token, request, expected).await;
     }
+
 }
