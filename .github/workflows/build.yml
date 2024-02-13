@@ -1,0 +1,20 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - '*'
+  pull_request:
+    branches:
+      - 'main'
+      - 'feature/matrix'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: install_deps
+        run: sudo apt install -y protobuf-compiler libsqlite3-dev
+      - name: build
+        run: cargo build --verbose
