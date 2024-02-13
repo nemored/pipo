@@ -1,7 +1,5 @@
 use std::{
-    collections::HashMap,
-    convert::{TryFrom, TryInto},
-    sync::{Arc, Mutex}, io::SeekFrom,
+    collections::HashMap, convert::{TryFrom, TryInto}, io::SeekFrom, ops::Deref, sync::{Arc, Mutex}
 };
 
 use anyhow::{Context, anyhow};
@@ -218,12 +216,14 @@ impl Mumble {
         eprintln!("Connecting...");
         let mut root_store = RootCertStore::empty();
         root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS
-                                            .0
                                             .iter()
                                             .map(|ta| {
-                                                OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject,
-                                                                                                     ta.spki,
-                                                                                                     ta.name_constraints)
+                                                let subject = Vec::from(&*ta.subject);
+                                                let spki = Vec::from(&*ta.subject_public_key_info);
+                                                let name_constraints = ta.name_constraints.as_deref().map(|x| Vec::from(x));
+                                                OwnedTrustAnchor::from_subject_spki_name_constraints(subject,
+                                                                                                     spki,
+                                                                                                     name_constraints)
                                             }));
         let config;
         if let Some(path) = self.server_cert.as_ref() {
