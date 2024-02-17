@@ -286,4 +286,163 @@ mod tests {
         test_response(hs_token, request, expected).await;
     }
 
+    #[tokio::test]
+    async fn matrix_handle_get_users() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("PUT")
+            .uri("/_matrix/app/v1/users/1")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_put_transactions() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("PUT")
+            .uri("/_matrix/app/v1/transactions/1")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_room_alias() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/rooms/room-alias")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_protocol() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/thirdparty/protocol/chosen-protocol")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_thirdparty_protocol() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/thirdparty/protocol/chosen-protocol")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_post_ping() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("POST")
+            .uri("/_matrix/app/v1/ping")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_thirdparty_location() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/thirdparty/location")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_thirdparty_location_protocol() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/thirdparty/location/chosen-protocol")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_thirdparty_user() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/thirdparty/user")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_thirdparty_user_protocol() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/thirdparty/user/chosen-user-protocol")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
 }
