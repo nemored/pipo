@@ -1,21 +1,28 @@
 use core::fmt;
 use std::marker::PhantomData;
 
+use serde_json::json;
+use serde::{Serialize, Deserialize};
 use axum::{
     body::Body,
     http::{header, HeaderValue, Request, StatusCode, Uri},
     response::Response,
     routing::{get, put, post},
     Router,
-    extract::Path,
+    extract::{Path, Request as RequestExtractor},
 };
-use bytes::BytesMut;
+use bytes::{BytesMut, Bytes};
 use ruma::api::{
     client::error::{ErrorBody, ErrorKind},
     OutgoingResponse,
+    IncomingRequest,
+    OutgoingRequest,
+    IncomingResponse,
+    appservice::event::push_events::v1::Request as RumaPushEventRequest,
 };
 use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
 
+const MATRIX_HANDLERS_RELEASED: bool = false;
 enum MatrixErrorCode {
     MForbidden,
 }
@@ -90,11 +97,11 @@ impl Http {
             .app
             .clone()
             .route("/_matrix/", get(|| async {})) .fallback(unsupported_method)// TODO: request method
-            .route("/_matrix/app/v1/users/:userId", put(get_user)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/transactions/:txnId", put(get_transaction)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/users/:userId", put(put_user)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/transactions/:txnId", put(put_transaction)).fallback(unsupported_method)
             .route("/_matrix/app/v1/rooms/:roomAlias", get(get_room)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/protocol/:protocol", get(get_thirdparty_protocol)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/ping", post(handle_ping)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/ping", post(post_ping)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/location", get(get_location)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/location/:protocol", get(get_location_protocol)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/user", get(get_thirdparty_user)).fallback(unsupported_method)
@@ -127,7 +134,7 @@ async fn get_location() {
     todo!("get location")
 }
 
-async fn handle_ping() {
+async fn post_ping() {
     todo!("ping")
 }
 
@@ -140,11 +147,42 @@ async fn get_room(Path(room): Path<String>) -> String {
     todo!("room")
 }
 
-async fn get_transaction(Path(tid): Path<String>) -> String {
-    todo!("txn")
+
+
+
+async fn into_bytes_request(request: Request<Body>) -> axum::http::Request<Bytes>{
+    let (parts, body) = request.into_parts();
+    let body = axum::body::to_bytes(body,usize::MAX).await.unwrap();
+    let request = axum::extract::Request::from_parts(
+        parts.into(),
+        body
+    );
+
+    request
 }
 
-async fn get_user(Path(user_id): Path<String>) -> String {
+async fn handle_put_transaction(request: RumaPushEventRequest) {
+    todo!("still todo")
+}
+async fn put_transaction(Path(tid): Path<String>, request: RequestExtractor) -> Response {
+    let req: RumaPushEventRequest = RumaPushEventRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![tid]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_put_transaction(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
+}
+
+async fn put_user(Path(user_id): Path<String>) -> String {
     todo!("get user")
 }
 
@@ -173,9 +211,11 @@ async fn unsupported_method(uri: Uri) -> Response {
     .into()
 }
 
+
 #[cfg(test)]
 mod tests {
-    use axum::{body::HttpBody, response::Json};
+    use axum::{body::HttpBody, response::Json, extract::FromRequest};
+    use ruma::api::MatrixVersion;
     use serde_json::{json, Value};
     use tower_service::Service;
 
@@ -287,13 +327,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn matrix_handle_get_users() {
-        let hs_token = "test_handle_unknown_endpoint";
+    async fn matrix_handle_put_user() {
+        let hs_token = "test_handle_get_users";
         let request = Request::builder()
             .method("PUT")
             .uri("/_matrix/app/v1/users/1")
             .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
-            .body(Body::empty())
+            .body(Body::new(json!({}).to_string()))
             .unwrap();
         let expected = Response::builder()
             .status(StatusCode::OK)
@@ -305,17 +345,18 @@ mod tests {
     #[tokio::test]
     async fn matrix_handle_put_transactions() {
         let hs_token = "test_handle_unknown_endpoint";
-        let request = Request::builder()
+
+        let r = Request::builder()
             .method("PUT")
             .uri("/_matrix/app/v1/transactions/1")
             .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
-            .body(Body::empty())
+            .body(Body::new(json!({"events": vec![json!({})], "txn_id": "id".to_owned()}).to_string()))
             .unwrap();
         let expected = Response::builder()
             .status(StatusCode::OK)
-            .body(Body::empty())
+            .body(Body::new(json!({}).to_string()))
             .unwrap();
-        test_response(hs_token, request, expected).await;
+        test_response(hs_token, r, expected).await;
     }
 
     #[tokio::test]
