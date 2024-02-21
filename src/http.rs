@@ -9,7 +9,7 @@ use axum::{
     response::Response,
     routing::{get, put, post},
     Router,
-    extract::{Path, Request as RequestExtractor},
+    extract::{Path, Request as RequestExtractor, Query},
 };
 use bytes::{BytesMut, Bytes};
 use ruma::api::{
@@ -20,6 +20,7 @@ use ruma::api::{
     IncomingResponse,
     appservice::event::push_events::v1::Request as RumaPushEventRequest,
     appservice::thirdparty::get_protocol::v1::Request as RumaGetProtocolRequest,
+    appservice::thirdparty::get_user_for_user_id::v1::Request as RumaGetThirdpartyUserForUIDRequest,
 };
 use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
 
@@ -123,8 +124,31 @@ async fn get_thirdparty_user_protocol() {
     todo!("get tp user protocol")
 }
 
-async fn get_thirdparty_user() {
-    todo!("get tp user")
+async fn handle_get_thirdparty_user(request: RumaGetThirdpartyUserForUIDRequest) {
+    todo!("handle tp get user")
+}
+
+#[derive(Deserialize)]
+struct GetThirdpartyUser {
+    userid: String
+}
+
+async fn get_thirdparty_user(userid: Query<GetThirdpartyUser>, request: RequestExtractor) -> Response {
+    let req: RumaGetThirdpartyUserForUIDRequest = RumaGetThirdpartyUserForUIDRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![userid.userid.to_owned()]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_thirdparty_user(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
 }
 
 async fn get_location_protocol() {
@@ -480,13 +504,13 @@ mod tests {
         let hs_token = "test_handle_unknown_endpoint";
         let request = Request::builder()
             .method("GET")
-            .uri("/_matrix/app/v1/thirdparty/user")
+            .uri("/_matrix/app/v1/thirdparty/user?userid=@user:example.com")
             .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
             .body(Body::empty())
             .unwrap();
         let expected = Response::builder()
             .status(StatusCode::OK)
-            .body(Body::empty())
+            .body(Body::new(json!({}).to_string()))
             .unwrap();
         test_response(hs_token, request, expected).await;
     }
