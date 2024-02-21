@@ -21,6 +21,7 @@ use ruma::api::{
     appservice::event::push_events::v1::Request as RumaPushEventRequest,
     appservice::thirdparty::get_protocol::v1::Request as RumaGetProtocolRequest,
     appservice::thirdparty::get_user_for_user_id::v1::Request as RumaGetThirdpartyUserForUIDRequest,
+    appservice::ping::send_ping::v1::Request as RumaPingRequest,
 };
 use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
 
@@ -159,8 +160,27 @@ async fn get_location() {
     todo!("get location")
 }
 
-async fn post_ping() {
-    todo!("ping")
+async fn handle_post_ping(request: RumaPingRequest) {
+    todo!("handle ping request")
+}
+
+async fn post_ping(request: RequestExtractor) -> Response {
+    let req: RumaPingRequest = RumaPingRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &["".to_owned()]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_post_ping(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
+
 }
 
 async fn handle_get_thirdparty_protocol(request:RumaGetProtocolRequest) {
@@ -458,11 +478,11 @@ mod tests {
             .method("POST")
             .uri("/_matrix/app/v1/ping")
             .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
-            .body(Body::empty())
+            .body(Body::new(json!({"transaction_id": "mautrix-go_1683636478256400935_123" }).to_string()))
             .unwrap();
         let expected = Response::builder()
             .status(StatusCode::OK)
-            .body(Body::empty())
+            .body(Body::new(json!({}).to_string()))
             .unwrap();
         test_response(hs_token, request, expected).await;
     }
