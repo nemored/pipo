@@ -19,6 +19,7 @@ use ruma::api::{
     OutgoingRequest,
     IncomingResponse,
     appservice::event::push_events::v1::Request as RumaPushEventRequest,
+    appservice::thirdparty::get_protocol::v1::Request as RumaGetProtocolRequest,
 };
 use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
 
@@ -138,8 +139,27 @@ async fn post_ping() {
     todo!("ping")
 }
 
-async fn get_thirdparty_protocol(Path(protocol): Path<String>) -> String {
-    todo!("protocol")
+async fn handle_get_thirdparty_protocol(request:RumaGetProtocolRequest) {
+    todo!("handling get thirdparty protocol")
+}
+
+async fn get_thirdparty_protocol(Path(protocol): Path<String>, request: RequestExtractor) -> Response {
+    let req: RumaGetProtocolRequest = RumaGetProtocolRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![protocol]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_thirdparty_protocol(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
+
 }
 
 
@@ -402,7 +422,7 @@ mod tests {
             .unwrap();
         let expected = Response::builder()
             .status(StatusCode::OK)
-            .body(Body::empty())
+            .body(Body::new(json!({}).to_string()))
             .unwrap();
         test_response(hs_token, request, expected).await;
     }
