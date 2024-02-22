@@ -22,6 +22,7 @@ use ruma::api::{
     appservice::thirdparty::get_protocol::v1::Request as RumaGetProtocolRequest,
     appservice::thirdparty::get_user_for_user_id::v1::Request as RumaGetThirdpartyUserForUIDRequest,
     appservice::ping::send_ping::v1::Request as RumaPingRequest,
+    appservice::query::query_user_id::v1::Request as RumaQueryUserIdRequest,
 };
 use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
 
@@ -100,7 +101,7 @@ impl Http {
             .app
             .clone()
             .route("/_matrix/", get(|| async {})) .fallback(unsupported_method)// TODO: request method
-            .route("/_matrix/app/v1/users/:userId", put(put_user)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/users/:userId", get(get_user)).fallback(unsupported_method)
             .route("/_matrix/app/v1/transactions/:txnId", put(put_transaction)).fallback(unsupported_method)
             .route("/_matrix/app/v1/rooms/:roomAlias", get(get_room)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/protocol/:protocol", get(get_thirdparty_protocol)).fallback(unsupported_method)
@@ -246,8 +247,26 @@ async fn put_transaction(Path(tid): Path<String>, request: RequestExtractor) -> 
     response
 }
 
-async fn put_user(Path(user_id): Path<String>) -> String {
-    todo!("get user")
+async fn handle_get_user(request: RumaQueryUserIdRequest) {
+    todo!("handle getting user")
+}
+
+async fn get_user(Path(user_id): Path<String>, request: RequestExtractor) -> Response {
+    let req: RumaQueryUserIdRequest = RumaQueryUserIdRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![user_id]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_user(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
 }
 
 
@@ -391,17 +410,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn matrix_handle_put_user() {
+    async fn matrix_handle_get_user() {
         let hs_token = "test_handle_get_users";
         let request = Request::builder()
-            .method("PUT")
-            .uri("/_matrix/app/v1/users/1")
+            .method("GET")
+            .uri("/_matrix/app/v1/users/@example:example.org")
             .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
             .body(Body::new(json!({}).to_string()))
             .unwrap();
         let expected = Response::builder()
             .status(StatusCode::OK)
-            .body(Body::empty())
+            .body(Body::new(json!({}).to_string()))
             .unwrap();
         test_response(hs_token, request, expected).await;
     }
