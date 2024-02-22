@@ -23,6 +23,7 @@ use ruma::api::{
     appservice::thirdparty::get_user_for_user_id::v1::Request as RumaGetThirdpartyUserForUIDRequest,
     appservice::ping::send_ping::v1::Request as RumaPingRequest,
     appservice::query::query_user_id::v1::Request as RumaQueryUserIdRequest,
+    appservice::thirdparty::get_location_for_protocol::v1::Request as RumaGetThirdpartyLocationForProtocol
 };
 use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
 
@@ -153,8 +154,26 @@ async fn get_thirdparty_user(userid: Query<GetThirdpartyUser>, request: RequestE
     response
 }
 
-async fn get_location_protocol() {
-    todo!("get loc protocol")
+async fn handle_get_location_protocol(request: RumaGetThirdpartyLocationForProtocol) {
+    todo!("handle get location protocol")
+}
+
+async fn get_location_protocol(Path(protocol): Path<String>, request: RequestExtractor) -> Response {
+    let req = RumaGetThirdpartyLocationForProtocol::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![protocol]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_location_protocol(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
 }
 
 async fn get_location() {
@@ -204,7 +223,6 @@ async fn get_thirdparty_protocol(Path(protocol): Path<String>, request: RequestE
         .body(Body::new(json!({}).to_string())).unwrap();
 
     response
-
 }
 
 
@@ -517,7 +535,7 @@ mod tests {
             .unwrap();
         let expected = Response::builder()
             .status(StatusCode::OK)
-            .body(Body::empty())
+            .body(Body::new(json!({}).to_string()))
             .unwrap();
         test_response(hs_token, request, expected).await;
     }
