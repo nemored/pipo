@@ -18,6 +18,7 @@ use ruma::api::{
     IncomingRequest,
     OutgoingRequest,
     IncomingResponse,
+    appservice,
     appservice::event::push_events::v1::Request as RumaPushEventRequest,
     appservice::thirdparty::get_protocol::v1::Request as RumaGetProtocolRequest,
     appservice::thirdparty::get_user_for_user_id::v1::Request as RumaGetThirdpartyUserForUIDRequest,
@@ -26,6 +27,7 @@ use ruma::api::{
     appservice::thirdparty::get_location_for_protocol::v1::Request as RumaGetThirdpartyLocationForProtocol,
     appservice::thirdparty::get_user_for_protocol::v1::Request as RumaGetUserForProtocolRequest,
     appservice::query::query_room_alias::v1::Request as RumaQueryRoomAliasRequest,
+    appservice::thirdparty::get_location_for_room_alias::v1::Request as RumaGetLocationForRoomAliasRequest,
 };
 use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
 
@@ -109,7 +111,7 @@ impl Http {
             .route("/_matrix/app/v1/rooms/:room", get(get_room)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/protocol/:protocol", get(get_thirdparty_protocol)).fallback(unsupported_method)
             .route("/_matrix/app/v1/ping", post(post_ping)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/location", get(get_location)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/thirdparty/location", get(get_thirdparty_location)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/location/:protocol", get(get_location_protocol)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/user", get(get_thirdparty_user)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/user/:protocol", get(get_thirdparty_user_protocol)).fallback(unsupported_method)
@@ -196,8 +198,26 @@ async fn get_location_protocol(Path(protocol): Path<String>, request: RequestExt
     response
 }
 
-async fn get_location() {
-    todo!("get location")
+async fn handle_get_thirdparty_location(request: RumaGetLocationForRoomAliasRequest) {
+    todo!("handle get thirdparty location")
+}
+
+async fn get_thirdparty_location(request: RequestExtractor) -> Response {
+    let req = RumaGetLocationForRoomAliasRequest::try_from_http_request::<_, &'static str>(
+        into_bytes_request(request).await,
+        &[]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_thirdparty_location(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
 }
 
 async fn handle_post_ping(request: RumaPingRequest) {
@@ -553,13 +573,13 @@ mod tests {
         let hs_token = "test_handle_unknown_endpoint";
         let request = Request::builder()
             .method("GET")
-            .uri("/_matrix/app/v1/thirdparty/location")
+            .uri("/_matrix/app/v1/thirdparty/location?alias=%23room:example.com")
             .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
             .body(Body::empty())
             .unwrap();
         let expected = Response::builder()
             .status(StatusCode::OK)
-            .body(Body::empty())
+            .body(Body::new(json!({}).to_string()))
             .unwrap();
         test_response(hs_token, request, expected).await;
     }
