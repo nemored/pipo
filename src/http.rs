@@ -23,7 +23,8 @@ use ruma::api::{
     appservice::thirdparty::get_user_for_user_id::v1::Request as RumaGetThirdpartyUserForUIDRequest,
     appservice::ping::send_ping::v1::Request as RumaPingRequest,
     appservice::query::query_user_id::v1::Request as RumaQueryUserIdRequest,
-    appservice::thirdparty::get_location_for_protocol::v1::Request as RumaGetThirdpartyLocationForProtocol
+    appservice::thirdparty::get_location_for_protocol::v1::Request as RumaGetThirdpartyLocationForProtocol,
+    appservice::thirdparty::get_user_for_protocol::v1::Request as RumaGetUserForProtocolRequest
 };
 use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
 
@@ -110,7 +111,7 @@ impl Http {
             .route("/_matrix/app/v1/thirdparty/location", get(get_location)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/location/:protocol", get(get_location_protocol)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/user", get(get_thirdparty_user)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/user/:protocol", get(get_thirdparty_user)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/thirdparty/user/:protocol", get(get_thirdparty_user_protocol)).fallback(unsupported_method)
             .fallback(unsupported_method)
             .fallback(unknown_route)
             .route_layer(ValidateRequestHeaderLayer::custom(MatrixBearer::new(
@@ -123,8 +124,26 @@ impl Http {
 }
 
 
-async fn get_thirdparty_user_protocol() {
-    todo!("get tp user protocol")
+async fn handle_get_thirdparty_user_protocol(request: RumaGetUserForProtocolRequest) {
+    todo!("handle get thirdparty user protocol");
+}
+
+async fn get_thirdparty_user_protocol(Path(protocol): Path<String>, request: RequestExtractor) -> Response {
+    let req: RumaGetUserForProtocolRequest = RumaGetUserForProtocolRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![protocol]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_thirdparty_user_protocol(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
 }
 
 async fn handle_get_thirdparty_user(request: RumaGetThirdpartyUserForUIDRequest) {
@@ -567,7 +586,7 @@ mod tests {
             .unwrap();
         let expected = Response::builder()
             .status(StatusCode::OK)
-            .body(Body::empty())
+            .body(Body::new(json!({}).to_string()))
             .unwrap();
         test_response(hs_token, request, expected).await;
     }
