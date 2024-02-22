@@ -165,9 +165,9 @@ async fn handle_post_ping(request: RumaPingRequest) {
 }
 
 async fn post_ping(request: RequestExtractor) -> Response {
-    let req: RumaPingRequest = RumaPingRequest::try_from_http_request(
+    let req: RumaPingRequest = RumaPingRequest::try_from_http_request::<_, &'static str>(
         into_bytes_request(request).await,
-        &["".to_owned()]
+        &[]
     ).unwrap();
 
     if MATRIX_HANDLERS_RELEASED {
