@@ -24,7 +24,8 @@ use ruma::api::{
     appservice::ping::send_ping::v1::Request as RumaPingRequest,
     appservice::query::query_user_id::v1::Request as RumaQueryUserIdRequest,
     appservice::thirdparty::get_location_for_protocol::v1::Request as RumaGetThirdpartyLocationForProtocol,
-    appservice::thirdparty::get_user_for_protocol::v1::Request as RumaGetUserForProtocolRequest
+    appservice::thirdparty::get_user_for_protocol::v1::Request as RumaGetUserForProtocolRequest,
+    appservice::query::query_room_alias::v1::Request as RumaQueryRoomAliasRequest,
 };
 use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
 
@@ -105,7 +106,7 @@ impl Http {
             .route("/_matrix/", get(|| async {})) .fallback(unsupported_method)// TODO: request method
             .route("/_matrix/app/v1/users/:userId", get(get_user)).fallback(unsupported_method)
             .route("/_matrix/app/v1/transactions/:txnId", put(put_transaction)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/rooms/:roomAlias", get(get_room)).fallback(unsupported_method)
+            .route("/_matrix/app/v1/rooms/:room", get(get_room)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/protocol/:protocol", get(get_thirdparty_protocol)).fallback(unsupported_method)
             .route("/_matrix/app/v1/ping", post(post_ping)).fallback(unsupported_method)
             .route("/_matrix/app/v1/thirdparty/location", get(get_location)).fallback(unsupported_method)
@@ -244,9 +245,26 @@ async fn get_thirdparty_protocol(Path(protocol): Path<String>, request: RequestE
     response
 }
 
+async fn handle_get_room(request: RumaQueryRoomAliasRequest) {
+    todo!("handle getting room")
+}
 
-async fn get_room(Path(room): Path<String>) -> String {
-    todo!("room")
+async fn get_room(Path(room): Path<String>, request: RequestExtractor) -> Response {
+    let req: RumaQueryRoomAliasRequest = RumaQueryRoomAliasRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![room]
+    ).expect("Error Parsing get room");
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_room(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
 }
 
 
@@ -254,7 +272,10 @@ async fn get_room(Path(room): Path<String>) -> String {
 
 async fn into_bytes_request(request: Request<Body>) -> axum::http::Request<Bytes>{
     let (parts, body) = request.into_parts();
-    let body = axum::body::to_bytes(body,usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(body,usize::MAX)
+        .await
+        .expect("Error casting request body to bytes");
+
     let request = axum::extract::Request::from_parts(
         parts.into(),
         body
@@ -335,7 +356,7 @@ async fn unsupported_method(uri: Uri) -> Response {
 #[cfg(test)]
 mod tests {
     use axum::{body::HttpBody, response::Json, extract::FromRequest};
-    use ruma::api::MatrixVersion;
+    use ruma::{api::MatrixVersion, room_id, room_alias_id};
     use serde_json::{json, Value};
     use tower_service::Service;
 
@@ -484,13 +505,13 @@ mod tests {
         let hs_token = "test_handle_unknown_endpoint";
         let request = Request::builder()
             .method("GET")
-            .uri("/_matrix/app/v1/rooms/room-alias")
+            .uri("/_matrix/app/v1/rooms/%23room:alias.com")
             .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
             .body(Body::empty())
             .unwrap();
         let expected = Response::builder()
             .status(StatusCode::OK)
-            .body(Body::empty())
+            .body(Body::new(json!({}).to_string()))
             .unwrap();
         test_response(hs_token, request, expected).await;
     }
