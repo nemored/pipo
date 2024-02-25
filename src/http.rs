@@ -105,17 +105,16 @@ impl Http {
         self.app = self
             .app
             .clone()
-            .route("/_matrix/", get(|| async {})) .fallback(unsupported_method)// TODO: request method
-            .route("/_matrix/app/v1/users/:userId", get(get_user)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/transactions/:txnId", put(put_transaction)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/rooms/:room", get(get_room)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/protocol/:protocol", get(get_thirdparty_protocol)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/ping", post(post_ping)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/location", get(get_thirdparty_location)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/location/:protocol", get(get_location_protocol)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/user", get(get_thirdparty_user)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/user/:protocol", get(get_thirdparty_user_protocol)).fallback(unsupported_method)
-            .fallback(unsupported_method)
+            .route("/_matrix/", get(|| async {}).fallback(unsupported_method))// TODO: request method
+            .route("/_matrix/app/v1/users/:userId", get(get_user).fallback(unsupported_method))
+            .route("/_matrix/app/v1/transactions/:txnId", put(put_transaction).fallback(unsupported_method))
+            .route("/_matrix/app/v1/rooms/:room", get(get_room).fallback(unsupported_method))
+            .route("/_matrix/app/v1/thirdparty/protocol/:protocol", get(get_thirdparty_protocol).fallback(unsupported_method))
+            .route("/_matrix/app/v1/ping", post(post_ping).fallback(unsupported_method))
+            .route("/_matrix/app/v1/thirdparty/location", get(get_thirdparty_location).fallback(unsupported_method))
+            .route("/_matrix/app/v1/thirdparty/location/:protocol", get(get_location_protocol).fallback(unsupported_method))
+            .route("/_matrix/app/v1/thirdparty/user", get(get_thirdparty_user).fallback(unsupported_method))
+            .route("/_matrix/app/v1/thirdparty/user/:protocol", get(get_thirdparty_user_protocol).fallback(unsupported_method))
             .fallback(unknown_route)
             .route_layer(ValidateRequestHeaderLayer::custom(MatrixBearer::new(
                 hs_token,
