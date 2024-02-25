@@ -3,6 +3,7 @@
 \#*\#
 .\#*
 *.sqlite3
-*.json
 .DS_Store
+.dev.env
+.env
 .vagrant/

@@ -1,0 +1,5 @@
+version: 2
+tunnels:
+  http:
+    proto: http
+    addr: 8456
