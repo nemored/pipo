@@ -1,0 +1,47 @@
+services:
+  ngrok:
+    image: ngrok/ngrok:alpine
+    env_file: ./.dev.env
+    restart: unless-stopped
+    command:
+      - "start"
+      - "--all"
+      - "--config"
+      - "/etc/ngrok.yml"
+    configs:
+      - source: ngrok
+        target: /etc/ngrok.yml
+    ports:
+      - 4040:4040
+
+  ircd:
+    build:
+      context: ./dev-environment/unrealircd
+    restart: unless-stopped
+    configs:
+      - source: unrealircd
+        target: /ircd/unrealircd.conf
+
+  app:
+    build:
+      context: .
+      target: debug
+    configs:
+      - source: pipo
+        target: /etc/pipo.json
+    volumes:
+      - type: volume
+        source: db-data
+        target: /var/lib/pipo
+    command:  [ "pipo", "/etc/pipo.json", "/var/lib/pipo/db.sqlite3"]
+      
+configs:
+  ngrok:
+    file: ./dev-environment/ngrok/ngrok.yml
+  pipo:
+    file: ./dev-environment/pipo/config.json
+  unrealircd:
+    file: ./dev-environment/unrealircd/unrealircd.conf
+    
+volumes:
+  db-data:
