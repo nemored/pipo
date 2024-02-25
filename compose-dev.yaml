@@ -23,6 +23,8 @@ services:
         target: /ircd/unrealircd.conf
 
   app:
+    depends_on:
+      - ircd
     build:
       context: .
       target: debug
@@ -34,7 +36,7 @@ services:
         source: db-data
         target: /var/lib/pipo
     command:  [ "pipo", "/etc/pipo.json", "/var/lib/pipo/db.sqlite3"]
-      
+
 configs:
   ngrok:
     file: ./dev-environment/ngrok/ngrok.yml
@@ -42,6 +44,6 @@ configs:
     file: ./dev-environment/pipo/config.json
   unrealircd:
     file: ./dev-environment/unrealircd/unrealircd.conf
-    
+
 volumes:
   db-data:
