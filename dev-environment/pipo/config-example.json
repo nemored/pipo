@@ -8,6 +8,17 @@
     "transports":
     [
         {
+            "transport":"Discord",
+            "token":"discord-token",
+            "guild_id":"guild-id",
+            "channel_mapping":
+            {
+                "channel_1_id":"general",
+                "channel_2_id":"mumble",
+                "channel_3_id":"test"
+            }
+        },
+        {
             "transport":"IRC",
             "nickname":"pipo",
             "server":"ircd",
@@ -18,6 +29,15 @@
                 "#general":"general",
                 "#mumble":"mumble",
                 "#test":"test"
+            }
+        },
+        {
+            "transport":"Matrix",
+            "registration_path":"path/to/registration.yaml",
+            "channel_mapping":
+            {
+                "!room-id-1:example.com":"general",
+                "!room-id-2:example.com":"test"
             }
         },
         {
@@ -35,6 +55,15 @@
             }
         },
         {
+            "transport":"Rachni",
+            "server":"rachni",
+            "api_key":"",
+            "interval":60,
+            "buses":[
+                "general"
+            ]
+        },
+        {
             "transport":"Slack",
             "token":"slack-token",
             "bot_token":"slack-bot-token",
@@ -44,26 +73,6 @@
                 "#mumble":"mumble",
                 "#test":"test"
             }
-        },
-        {
-            "transport":"Discord",
-            "token":"discord-token",
-            "guild_id":"guild-id",
-            "channel_mapping":
-            {
-                "channel_1_id":"general",
-                "channel_2_id":"mumble",
-                "channel_3_id":"test"
-            }
-        },
-        {
-            "transport":"Rachni",
-            "server":"rachni",
-            "api_key":"",
-            "interval":60,
-            "buses":[
-                "general"
-            ]
         }
     ]
 }
