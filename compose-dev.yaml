@@ -21,6 +21,9 @@ services:
     configs:
       - source: unrealircd
         target: /ircd/unrealircd.conf
+    ports:
+      - "6667"
+      - "6697"
 
   app:
     depends_on:
