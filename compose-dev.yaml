@@ -22,8 +22,8 @@ services:
       - source: unrealircd
         target: /ircd/unrealircd.conf
     ports:
-      - "6667"
-      - "6697"
+      - "${IRCD_LISTEN_ADDR:-127.0.0.1}:${IRCD_PORT:-6667}:6667"
+      - "${IRCD_LISTEN_ADDR:-127.0.0.1}:${IRCD_TLS_PORT:-6697}:6697"
 
   app:
     depends_on:
