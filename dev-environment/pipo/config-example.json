@@ -34,7 +34,7 @@
         },
         {
             "transport":"Matrix",
-            "registration_path":"path/to/registration.yaml",
+            "registration_path":"/etc/matrix-synapse/appservices/appservice-registration-pipo.yaml",
             "channel_mapping":
             {
                 "!room-id-1:example.com":"general",
