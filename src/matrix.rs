@@ -61,7 +61,7 @@ impl Matrix {
             .keys()
             .map(|x| Namespace::new(true, x.to_owned()))
             .collect();
-        let registration = match File::open(registration_path) {
+        let registration = match File::open(&registration_path) {
             Ok(registration_file) => {
                 let mut registration: Registration = serde_yaml::from_reader(registration_file)?;
                 if &registration.id == "pipo" {
@@ -77,13 +77,13 @@ impl Matrix {
                         registration.id
                     ))
                 }
-            }
+            },
             Err(e) => match e.kind() {
                 std::io::ErrorKind::NotFound => {
                     let mut token_generator = TokenGenerator::new();
                     let as_token = token_generator.generate_token();
                     let hs_token = token_generator.generate_token();
-                    Ok(RegistrationInit {
+                    let registration: Registration = RegistrationInit {
                         id: "pipo".to_string(),
                         url: Some(url.to_string()),
                         as_token,
@@ -93,8 +93,11 @@ impl Matrix {
                         rate_limited: Some(true),
                         protocols: Some(protocols),
                     }
-                    .into())
-                }
+                    .into();
+                    let registration_file = File::create(&registration_path)?;
+                    serde_yaml::to_writer(registration_file, &registration)?;
+                    Ok(registration)
+                },
                 _ => Err(e.into()),
             },
         }?;

@@ -1,0 +1,94 @@
+services:
+  ngrok:
+    image: ngrok/ngrok:alpine
+    env_file: ./.dev.env
+    restart: unless-stopped
+    command:
+      - "start"
+      - "--all"
+      - "--config"
+      - "/etc/ngrok.yml"
+    configs:
+      - source: ngrok
+        target: /etc/ngrok.yml
+    ports:
+      - 4040:4040
+
+  ircd:
+    build:
+      context: ./dev-environment/unrealircd
+    restart: unless-stopped
+    configs:
+      - source: unrealircd
+        target: /ircd/unrealircd.conf
+    ports:
+      - "${IRCD_LISTEN_ADDR:-127.0.0.1}:${IRCD_PORT:-6667}:6667"
+      - "${IRCD_LISTEN_ADDR:-127.0.0.1}:${IRCD_TLS_PORT:-6697}:6697"
+
+  postgres:
+    image: postgres
+    restart: always
+    shm_size: 128mb
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+
+  postgres-init:
+    depends_on:
+      - postgres
+    build:
+      context: ./dev-environment/postgres-init
+
+  synapse:
+    depends_on:
+      - app
+    image: matrixdotorg/synapse
+    environment:
+      UID: 0
+      GID: 0
+    configs:
+      - source: synapse
+        target: /data/homeserver.yaml
+      - source: synapse-log-config
+        target: /data/synapse.log.config
+    volumes:
+      - type: volume
+        source: as-registry
+        target: /data/appservices
+      - type: volume
+        source: synapse-data
+        target: /data
+
+  app:
+    depends_on:
+      - ircd
+    build:
+      context: .
+      target: debug
+    configs:
+      - source: pipo
+        target: /etc/pipo.json
+    volumes:
+      - type: volume
+        source: db-data
+        target: /var/lib/pipo
+      - type: volume
+        source: as-registry
+        target: /etc/matrix-synapse/appservices
+    command:  [ "pipo", "/etc/pipo.json", "/var/lib/pipo/db.sqlite3"]
+
+configs:
+  ngrok:
+    file: ./dev-environment/ngrok/ngrok.yml
+  pipo:
+    file: ./dev-environment/pipo/config.json
+  synapse:
+    file: ./dev-environment/synapse/homeserver.yaml
+  unrealircd:
+    file: ./dev-environment/unrealircd/unrealircd.conf
+  synapse-log-config:
+    file: ./dev-environment/synapse/synapse.log.config
+
+volumes:
+  db-data:
+  as-registry:
+  synapse-data:

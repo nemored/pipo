@@ -1,0 +1,26 @@
+server_name: "synapse"
+listeners:
+  - port: 8008
+    tls: false
+    type: http
+    resources:
+      - names: [client]
+        compress: false
+database:
+  name: psycopg2
+  args:
+    user: synapse_user
+    dbname: synapse
+    host: postgres
+    cp_min: 5
+    cp_max: 5
+media_store_path: "/data/media_store"
+enable_registration: true
+enable_registration_without_verification: true
+report_stats: false
+app_service_config_files:
+  - "/data/appservices/appservice-registration-pipo.yaml"
+signing_key_path: "/data/synapse.signing.key"
+trusted_key_servers:
+  - server_name: "matrix.org"
+log_config: /data/synapse.log.config
