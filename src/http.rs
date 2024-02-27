@@ -1,21 +1,37 @@
 use core::fmt;
 use std::marker::PhantomData;
 
+use serde_json::json;
+use serde::{Serialize, Deserialize};
 use axum::{
     body::Body,
     http::{header, HeaderValue, Request, StatusCode, Uri},
     response::Response,
     routing::{get, put, post},
     Router,
-    extract::Path,
+    extract::{Path, Request as RequestExtractor, Query},
 };
-use bytes::BytesMut;
+use bytes::{BytesMut, Bytes};
 use ruma::api::{
     client::error::{ErrorBody, ErrorKind},
     OutgoingResponse,
+    IncomingRequest,
+    OutgoingRequest,
+    IncomingResponse,
+    appservice,
+    appservice::event::push_events::v1::Request as RumaPushEventRequest,
+    appservice::thirdparty::get_protocol::v1::Request as RumaGetProtocolRequest,
+    appservice::thirdparty::get_user_for_user_id::v1::Request as RumaGetThirdpartyUserForUIDRequest,
+    appservice::ping::send_ping::v1::Request as RumaPingRequest,
+    appservice::query::query_user_id::v1::Request as RumaQueryUserIdRequest,
+    appservice::thirdparty::get_location_for_protocol::v1::Request as RumaGetThirdpartyLocationForProtocol,
+    appservice::thirdparty::get_user_for_protocol::v1::Request as RumaGetUserForProtocolRequest,
+    appservice::query::query_room_alias::v1::Request as RumaQueryRoomAliasRequest,
+    appservice::thirdparty::get_location_for_room_alias::v1::Request as RumaGetLocationForRoomAliasRequest,
 };
 use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
 
+const MATRIX_HANDLERS_RELEASED: bool = false;
 enum MatrixErrorCode {
     MForbidden,
 }
@@ -89,17 +105,16 @@ impl Http {
         self.app = self
             .app
             .clone()
-            .route("/_matrix/", get(|| async {})) .fallback(unsupported_method)// TODO: request method
-            .route("/_matrix/app/v1/users/:userId", put(get_user)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/transactions/:txnId", put(get_transaction)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/rooms/:roomAlias", get(get_room)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/protocol/:protocol", get(get_thirdparty_protocol)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/ping", post(handle_ping)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/location", get(get_location)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/location/:protocol", get(get_location_protocol)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/user", get(get_thirdparty_user)).fallback(unsupported_method)
-            .route("/_matrix/app/v1/thirdparty/user/:protocol", get(get_thirdparty_user)).fallback(unsupported_method)
-            .fallback(unsupported_method)
+            .route("/_matrix/", get(|| async {}).fallback(unsupported_method))// TODO: request method
+            .route("/_matrix/app/v1/users/:userId", get(get_user).fallback(unsupported_method))
+            .route("/_matrix/app/v1/transactions/:txnId", put(put_transaction).fallback(unsupported_method))
+            .route("/_matrix/app/v1/rooms/:room", get(get_room).fallback(unsupported_method))
+            .route("/_matrix/app/v1/thirdparty/protocol/:protocol", get(get_thirdparty_protocol).fallback(unsupported_method))
+            .route("/_matrix/app/v1/ping", post(post_ping).fallback(unsupported_method))
+            .route("/_matrix/app/v1/thirdparty/location", get(get_thirdparty_location).fallback(unsupported_method))
+            .route("/_matrix/app/v1/thirdparty/location/:protocol", get(get_location_protocol).fallback(unsupported_method))
+            .route("/_matrix/app/v1/thirdparty/user", get(get_thirdparty_user).fallback(unsupported_method))
+            .route("/_matrix/app/v1/thirdparty/user/:protocol", get(get_thirdparty_user_protocol).fallback(unsupported_method))
             .fallback(unknown_route)
             .route_layer(ValidateRequestHeaderLayer::custom(MatrixBearer::new(
                 hs_token,
@@ -111,41 +126,224 @@ impl Http {
 }
 
 
-async fn get_thirdparty_user_protocol() {
-    todo!("get tp user protocol")
+async fn handle_get_thirdparty_user_protocol(request: RumaGetUserForProtocolRequest) {
+    todo!("handle get thirdparty user protocol");
 }
 
-async fn get_thirdparty_user() {
-    todo!("get tp user")
+async fn get_thirdparty_user_protocol(Path(protocol): Path<String>, request: RequestExtractor) -> Response {
+    let req: RumaGetUserForProtocolRequest = RumaGetUserForProtocolRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![protocol]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_thirdparty_user_protocol(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
 }
 
-async fn get_location_protocol() {
-    todo!("get loc protocol")
+async fn handle_get_thirdparty_user(request: RumaGetThirdpartyUserForUIDRequest) {
+    todo!("handle tp get user")
 }
 
-async fn get_location() {
-    todo!("get location")
+#[derive(Deserialize)]
+struct GetThirdpartyUser {
+    userid: String
 }
 
-async fn handle_ping() {
-    todo!("ping")
+async fn get_thirdparty_user(userid: Query<GetThirdpartyUser>, request: RequestExtractor) -> Response {
+    let req: RumaGetThirdpartyUserForUIDRequest = RumaGetThirdpartyUserForUIDRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![userid.userid.to_owned()]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_thirdparty_user(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
 }
 
-async fn get_thirdparty_protocol(Path(protocol): Path<String>) -> String {
-    todo!("protocol")
+async fn handle_get_location_protocol(request: RumaGetThirdpartyLocationForProtocol) {
+    todo!("handle get location protocol")
+}
+
+async fn get_location_protocol(Path(protocol): Path<String>, request: RequestExtractor) -> Response {
+    let req = RumaGetThirdpartyLocationForProtocol::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![protocol]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_location_protocol(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
+}
+
+async fn handle_get_thirdparty_location(request: RumaGetLocationForRoomAliasRequest) {
+    todo!("handle get thirdparty location")
+}
+
+async fn get_thirdparty_location(request: RequestExtractor) -> Response {
+    let req = RumaGetLocationForRoomAliasRequest::try_from_http_request::<_, &'static str>(
+        into_bytes_request(request).await,
+        &[]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_thirdparty_location(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
+}
+
+async fn handle_post_ping(request: RumaPingRequest) {
+    todo!("handle ping request")
+}
+
+async fn post_ping(request: RequestExtractor) -> Response {
+    let req: RumaPingRequest = RumaPingRequest::try_from_http_request::<_, &'static str>(
+        into_bytes_request(request).await,
+        &[]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_post_ping(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
+
+}
+
+async fn handle_get_thirdparty_protocol(request:RumaGetProtocolRequest) {
+    todo!("handling get thirdparty protocol")
+}
+
+async fn get_thirdparty_protocol(Path(protocol): Path<String>, request: RequestExtractor) -> Response {
+    let req: RumaGetProtocolRequest = RumaGetProtocolRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![protocol]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_thirdparty_protocol(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
+}
+
+async fn handle_get_room(request: RumaQueryRoomAliasRequest) {
+    todo!("handle getting room")
+}
+
+async fn get_room(Path(room): Path<String>, request: RequestExtractor) -> Response {
+    let req: RumaQueryRoomAliasRequest = RumaQueryRoomAliasRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![room]
+    ).expect("Error Parsing get room");
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_room(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
 }
 
 
-async fn get_room(Path(room): Path<String>) -> String {
-    todo!("room")
+
+
+async fn into_bytes_request(request: Request<Body>) -> axum::http::Request<Bytes>{
+    let (parts, body) = request.into_parts();
+    let body = axum::body::to_bytes(body,usize::MAX)
+        .await
+        .expect("Error casting request body to bytes");
+
+    let request = axum::extract::Request::from_parts(
+        parts.into(),
+        body
+    );
+
+    request
 }
 
-async fn get_transaction(Path(tid): Path<String>) -> String {
-    todo!("txn")
+async fn handle_put_transaction(request: RumaPushEventRequest) {
+    todo!("still todo")
+}
+async fn put_transaction(Path(tid): Path<String>, request: RequestExtractor) -> Response {
+    let req: RumaPushEventRequest = RumaPushEventRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![tid]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_put_transaction(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
 }
 
-async fn get_user(Path(user_id): Path<String>) -> String {
-    todo!("get user")
+async fn handle_get_user(request: RumaQueryUserIdRequest) {
+    todo!("handle getting user")
+}
+
+async fn get_user(Path(user_id): Path<String>, request: RequestExtractor) -> Response {
+    let req: RumaQueryUserIdRequest = RumaQueryUserIdRequest::try_from_http_request(
+        into_bytes_request(request).await,
+        &vec![user_id]
+    ).unwrap();
+
+    if MATRIX_HANDLERS_RELEASED {
+        // do whatever it takes.
+        handle_get_user(req).await;
+    };
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::new(json!({}).to_string())).unwrap();
+
+    response
 }
 
 
@@ -173,9 +371,11 @@ async fn unsupported_method(uri: Uri) -> Response {
     .into()
 }
 
+
 #[cfg(test)]
 mod tests {
-    use axum::{body::HttpBody, response::Json};
+    use axum::{body::HttpBody, response::Json, extract::FromRequest};
+    use ruma::{api::MatrixVersion, room_id, room_alias_id};
     use serde_json::{json, Value};
     use tower_service::Service;
 
@@ -286,4 +486,148 @@ mod tests {
         test_response(hs_token, request, expected).await;
     }
 
+    #[tokio::test]
+    async fn matrix_handle_get_user() {
+        let hs_token = "test_handle_get_users";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/users/@example:example.org")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::new(json!({}).to_string()))
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::new(json!({}).to_string()))
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_put_transactions() {
+        let hs_token = "test_handle_unknown_endpoint";
+
+        let r = Request::builder()
+            .method("PUT")
+            .uri("/_matrix/app/v1/transactions/1")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::new(json!({"events": vec![json!({})], "txn_id": "id".to_owned()}).to_string()))
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::new(json!({}).to_string()))
+            .unwrap();
+        test_response(hs_token, r, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_room_alias() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/rooms/%23room:alias.com")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::new(json!({}).to_string()))
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_thirdparty_protocol() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/thirdparty/protocol/chosen-protocol")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::new(json!({}).to_string()))
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_post_ping() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("POST")
+            .uri("/_matrix/app/v1/ping")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::new(json!({"transaction_id": "mautrix-go_1683636478256400935_123" }).to_string()))
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::new(json!({}).to_string()))
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_thirdparty_location() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/thirdparty/location?alias=%23room:example.com")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::new(json!({}).to_string()))
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_thirdparty_location_protocol() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/thirdparty/location/chosen-protocol")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::new(json!({}).to_string()))
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_thirdparty_user() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/thirdparty/user?userid=@user:example.com")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::new(json!({}).to_string()))
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
+
+    #[tokio::test]
+    async fn matrix_handle_get_thirdparty_user_protocol() {
+        let hs_token = "test_handle_unknown_endpoint";
+        let request = Request::builder()
+            .method("GET")
+            .uri("/_matrix/app/v1/thirdparty/user/chosen-user-protocol")
+            .header(header::AUTHORIZATION, format!("Bearer {hs_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let expected = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::new(json!({}).to_string()))
+            .unwrap();
+        test_response(hs_token, request, expected).await;
+    }
 }
