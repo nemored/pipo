@@ -48,6 +48,8 @@ services:
     configs:
       - source: synapse
         target: /data/homeserver.yaml
+      - source: synapse-log-config
+        target: /data/synapse.log.config
     volumes:
       - type: volume
         source: as-registry
@@ -83,6 +85,8 @@ configs:
     file: ./dev-environment/synapse/homeserver.yaml
   unrealircd:
     file: ./dev-environment/unrealircd/unrealircd.conf
+  synapse-log-config:
+    file: ./dev-environment/synapse/synapse.log.config
 
 volumes:
   db-data:

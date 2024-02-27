@@ -23,3 +23,4 @@ app_service_config_files:
 signing_key_path: "/data/synapse.signing.key"
 trusted_key_servers:
   - server_name: "matrix.org"
+log_config: /data/synapse.log.config
