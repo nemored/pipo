@@ -20,7 +20,7 @@ hmac = "0.12"
 html-escape = "0.2"
 irc = "0.15"
 lazy_static = "1.4"
-nix = "0.27"
+nix = "0.28"
 #parser = { path = "./parser" }
 protobuf = "2"
 regex = "1.7"
