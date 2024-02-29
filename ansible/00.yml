@@ -1,0 +1,57 @@
+#!/usr/bin/env ansible-playbook
+---
+- name: prepare system for pipo
+  hosts: server_pipo
+  remote_user: root
+  # gather_facts: no
+
+  # pre_tasks:
+  #   - meta: end_play
+
+  roles:
+    - role: swap
+
+  post_tasks:
+    - name: install dependencies
+      ansible.builtin.apt:
+        update_cache: yes
+        pkg:
+          - git
+          - tmux
+          - libssl-dev
+          - libsqlite3-dev
+          - protobuf-compiler
+
+- name: prepare user for pipo
+  hosts: localhost:server_pipo
+  remote_user: root
+  # gather_facts: no
+
+  # pre_tasks:
+  #   - meta: end_play
+
+  roles:
+    - role: sshUp
+      vars:
+        profile: pipo_user
+
+- name: clone pipo
+  hosts: server_pipo
+  remote_user: pipo
+  # gather_facts: no
+
+  # pre_tasks:
+  #   - meta: end_play
+
+  tasks:
+    - name: clone pipo
+      git:
+        repo: "{{ hostvars[inventory_hostname].pipo_repository | default('https://github.com/nemored/pipo') }}"
+        version: "{{ hostvars[inventory_hostname].pipo_version | default('main') }}"
+        dest: /home/pipo/pipo
+        update: true
+
+    - name: copy pipo.json
+      copy:
+        src: ../pipo.json
+        dest: /home/pipo/pipo.json
