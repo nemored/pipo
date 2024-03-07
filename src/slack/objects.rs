@@ -1,42 +1,36 @@
 use std::fmt;
 
 use serde::{
-    de::{
-	Error,
-	Visitor,
-    },
-    Deserialize,
-    Deserializer,
-    Serialize,
-    Serializer,
+    de::{Error, Visitor},
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 #[derive(Deserialize, Debug)]
-#[serde(tag="type", rename_all="snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
     Disconnect {
-	reason: String,
-	debug_info: DebugInfo,
+        reason: String,
+        debug_info: DebugInfo,
     },
     EventsApi {
-	envelope_id: String,
-	accepts_response_payload: bool,
-	retry_attempt: u64,
-	retry_reason: String,
-	payload: EventPayload,
+        envelope_id: String,
+        accepts_response_payload: bool,
+        retry_attempt: u64,
+        retry_reason: String,
+        payload: EventPayload,
     },
     Hello {
-	num_connections: u64,
-	debug_info: DebugInfo,
-	connection_info: ConnectionInfo,
+        num_connections: u64,
+        debug_info: DebugInfo,
+        connection_info: ConnectionInfo,
     },
     SlashCommands {
-	envelope_id: String,
-	accepts_response_payload: bool,
-	payload: SlashCommandPayload,
+        envelope_id: String,
+        accepts_response_payload: bool,
+        payload: SlashCommandPayload,
     },
     Unhandled {
-	error: String,
+        error: String,
     },
 }
 
@@ -53,23 +47,23 @@ pub struct DebugInfo {
 }
 
 #[derive(Deserialize, Debug, Serialize)]
-#[serde(tag="type", rename_all="snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventPayload {
     EventCallback {
-	token: String,
-	team_id: String,
-	api_app_id: String,
-	event: Event,
-	event_id: String,
-	event_time: i64,
-	authorizations: Vec<Authorization>,
-	is_ext_shared_channel: bool,
-	event_context: String,
+        token: String,
+        team_id: String,
+        api_app_id: String,
+        event: Event,
+        event_id: String,
+        event_time: i64,
+        authorizations: Vec<Authorization>,
+        is_ext_shared_channel: bool,
+        event_context: String,
     },
     UrlVerification {
-	token: String,
-	challenge: String,
-    }
+        token: String,
+        challenge: String,
+    },
 }
 
 #[derive(Deserialize, Debug)]
@@ -115,51 +109,51 @@ pub struct Message {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag="type", rename_all="snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     Message(Message),
     PinAdded {
-	channel_id: String,
-	item: Box<Item>,
-	pin_count: u64,
-	pinned_info: PinnedInfo,
-	event_ts: String,
-	user: Option<String>,
+        channel_id: String,
+        item: Box<Item>,
+        pin_count: u64,
+        pinned_info: PinnedInfo,
+        event_ts: String,
+        user: Option<String>,
     },
     PinRemoved {
-	channel_id: String,
-	item: Box<Item>,
-	pin_count: u64,
-	pinned_info: PinnedInfo,
-	has_pins: bool,
-	event_ts: String,
-	user: Option<String>,
+        channel_id: String,
+        item: Box<Item>,
+        pin_count: u64,
+        pinned_info: PinnedInfo,
+        has_pins: bool,
+        event_ts: String,
+        user: Option<String>,
     },
-    ReactionAdded{
-	event_ts: Timestamp,
-	item: Box<Event>,
-	reaction: String,
-	user: Option<String>,
-	item_user: Option<String>,
+    ReactionAdded {
+        event_ts: Timestamp,
+        item: Box<Event>,
+        reaction: String,
+        user: Option<String>,
+        item_user: Option<String>,
     },
     ReactionRemoved {
-	event_ts: Timestamp,
-	item: Box<Event>,
-	reaction: String,
-	user: Option<String>,
-	item_user: Option<String>,
-    }
+        event_ts: Timestamp,
+        item: Box<Event>,
+        reaction: String,
+        user: Option<String>,
+        item_user: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag="type", rename_all="snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Item {
     Message {
-	created: u64,
-	created_by: String,
-	channel: String,
-	message: Event,
-    }
+        created: u64,
+        created_by: String,
+        channel: String,
+        message: Event,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -217,7 +211,7 @@ pub struct File {
     pub thumb_tiny: String,
     pub permalink: String,
     pub permalink_public: String,
-    pub has_rich_preview: bool
+    pub has_rich_preview: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -286,272 +280,272 @@ pub struct Attachment {
 pub struct Timestamp(pub String);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag="type", rename_all="snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Block {
     Actions {
-	elements: Vec<Element>,
-	block_id: Option<String>
+        elements: Vec<Element>,
+        block_id: Option<String>,
     },
     Context {
-	elements: Vec<Element>,
-	block_id: Option<String>
+        elements: Vec<Element>,
+        block_id: Option<String>,
     },
     Divider {
-	block_id: Option<String>
+        block_id: Option<String>,
     },
     File {
-	external_id: String,
-	source: String,
-	block_id: Option<String>
+        external_id: String,
+        source: String,
+        block_id: Option<String>,
     },
     Header {
-	text: String,
-	block_id: Option<String>
+        text: String,
+        block_id: Option<String>,
     },
     Image {
-	image_url: String,
-	alt_text: String,
-	title: Option<Text>,
-	block_id: Option<String>
+        image_url: String,
+        alt_text: String,
+        title: Option<Text>,
+        block_id: Option<String>,
     },
     Input {
-	label: Text,
-	element: Element,
-	dispatch_action: Option<bool>,
-	block_id: Option<String>,
-	hint: Option<Text>,
-	optional: Option<bool>
+        label: Text,
+        element: Element,
+        dispatch_action: Option<bool>,
+        block_id: Option<String>,
+        hint: Option<Text>,
+        optional: Option<bool>,
     },
     RichText {
-	elements: Vec<Element>,
-	block_id: Option<String>,
+        elements: Vec<Element>,
+        block_id: Option<String>,
     },
     Section {
-	text: Option<Text>,
-	block_id: Option<String>,
-	fields: Option<Vec<Text>>,
-	accessory: Option<Element>
-    }
+        text: Option<Text>,
+        block_id: Option<String>,
+        fields: Option<Vec<Text>>,
+        accessory: Option<Element>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag="type", rename_all="snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Element {
     Button {
-	text: Text,
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	url: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	value: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	style: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>
+        text: Text,
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        style: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
     },
     Channel {
-	channel_id: String,
+        channel_id: String,
     },
     ChannelsSelect {
-	placeholder: Text,
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_channel: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	response_url_enabled: Option<bool>
+        placeholder: Text,
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_channel: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_url_enabled: Option<bool>,
     },
     Checkboxes {
-	action_id: String,
-	options: Vec<CompositionOption>,
-	initial_options: Vec<CompositionOption>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>
+        action_id: String,
+        options: Vec<CompositionOption>,
+        initial_options: Vec<CompositionOption>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
     },
     ConversationsSelect {
-	placeholder: Text,
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_conversation: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	default_to_current_conversation: Option<bool>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	response_url_enabled: Option<bool>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	filter: Option<ConversationListFilter>
+        placeholder: Text,
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_conversation: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        default_to_current_conversation: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_url_enabled: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filter: Option<ConversationListFilter>,
     },
     Datepicker {
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	placeholder: Option<Text>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_date: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        placeholder: Option<Text>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_date: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
     },
     Emoji {
-	name: String,
+        name: String,
     },
     ExternalSelect {
-	placeholder: Text,
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_option: Option<CompositionOption>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	min_query_length: Option<i64>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>
+        placeholder: Text,
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_option: Option<CompositionOption>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        min_query_length: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
     },
     Image {
-	image_url: String,
-	alt_text: String
+        image_url: String,
+        alt_text: String,
     },
     Link {
-	url: String,
+        url: String,
     },
     MultiStaticSelect {
-	placeholder: Text,
-	action_id: String,
-	options: Vec<CompositionOption>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	option_groups: Option<Vec<CompositionOptionGroup>>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_options: Option<Vec<CompositionOption>>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	max_selected_items: Option<i64>
+        placeholder: Text,
+        action_id: String,
+        options: Vec<CompositionOption>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        option_groups: Option<Vec<CompositionOptionGroup>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_options: Option<Vec<CompositionOption>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_selected_items: Option<i64>,
     },
     MultiExternalSelect {
-	placeholder: Text,
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	min_query_length: Option<i64>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_options: Option<Vec<CompositionOption>>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	max_selected_items: Option<i64>
+        placeholder: Text,
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        min_query_length: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_options: Option<Vec<CompositionOption>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_selected_items: Option<i64>,
     },
     MultiUsersSelect {
-	placeholder: Text,
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_users: Option<Vec<String>>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	max_selected_items: Option<i64>
+        placeholder: Text,
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_users: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_selected_items: Option<i64>,
     },
     MultiConversationsSelect {
-	placeholder: Text,
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_conversations: Option<Vec<String>>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	default_to_current_conversation: Option<bool>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	max_selected_items: Option<i64>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	filter: Option<ConversationListFilter>
+        placeholder: Text,
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_conversations: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        default_to_current_conversation: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_selected_items: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filter: Option<ConversationListFilter>,
     },
     MultiChannelsSelect {
-	placeholder: Text,
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_channels: Option<Vec<String>>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	max_selected_items: Option<i64>
+        placeholder: Text,
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_channels: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_selected_items: Option<i64>,
     },
     Overflow {
-	action_id: String,
-	options: Vec<CompositionOption>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>
+        action_id: String,
+        options: Vec<CompositionOption>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
     },
     PlainTextInput {
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	placeholder: Option<Text>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_value: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	multiline: Option<bool>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	min_length: Option<i64>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	max_length: Option<i64>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	dispatch_action_config: Option<DispatchActionConfiguration>
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        placeholder: Option<Text>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_value: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        multiline: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        min_length: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_length: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dispatch_action_config: Option<DispatchActionConfiguration>,
     },
     RadioButtons {
-	action_id: String,
-	options: Vec<CompositionOption>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_option: Option<CompositionOption>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>
+        action_id: String,
+        options: Vec<CompositionOption>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_option: Option<CompositionOption>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
     },
     RichTextList {
-	elements: Vec<Element>,
-	style: String,
-	indent: u64,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	border: Option<u64>,
+        elements: Vec<Element>,
+        style: String,
+        indent: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        border: Option<u64>,
     },
     RichTextPreformatted {
-	elements: Vec<Element>,
+        elements: Vec<Element>,
     },
     RichTextQuote {
-	elements: Vec<Element>,
+        elements: Vec<Element>,
     },
     RichTextSection {
-	elements: Vec<Element>,
+        elements: Vec<Element>,
     },
     StaticSelect {
-	placeholder: String,
-	action_id: String,
-	options: Vec<CompositionOption>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	option_groups: Option<Vec<CompositionOptionGroup>>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_options: Option<Vec<CompositionOption>>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>
+        placeholder: String,
+        action_id: String,
+        options: Vec<CompositionOption>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        option_groups: Option<Vec<CompositionOptionGroup>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_options: Option<Vec<CompositionOption>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
     },
     Text {
-	text: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	style: Option<Style>,
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        style: Option<Style>,
     },
     Timepicker {
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	placeholder: Option<Text>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_time: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        placeholder: Option<Text>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_time: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
     },
     User {
-	user_id: String,
+        user_id: String,
     },
     UsersSelect {
-	placeholder: Text,
-	action_id: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	initial_user: Option<String>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	confirm: Option<ConfirmationDialog>
-    }
+        placeholder: Text,
+        action_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        initial_user: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ConfirmationDialog>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -566,61 +560,61 @@ pub struct Style {
     pub strike: Option<bool>,
 }
 
-#[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
-#[serde(tag="type", rename_all="snake_case")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Text {
     PlainText {
-	text: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	emoji: Option<bool>,
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        emoji: Option<bool>,
     },
     Mrkdwn {
-	text: String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	verbatim: Option<bool>
-    }
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        verbatim: Option<bool>,
+    },
 }
 
-#[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ConfirmationDialog {
     pub title: Text,
     pub text: Text,
     pub confirm: Text,
     pub deny: Text,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub style: Option<String>
+    pub style: Option<String>,
 }
 
-#[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CompositionOption {
     pub text: Text,
     pub value: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<Text>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>
+    pub url: Option<String>,
 }
 
-#[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CompositionOptionGroup {
     pub label: Text,
-    pub options: Vec<CompositionOption>
+    pub options: Vec<CompositionOption>,
 }
 
-#[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DispatchActionConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger_actions_on: Option<Vec<String>>
+    pub trigger_actions_on: Option<Vec<String>>,
 }
 
-#[derive(Clone,Debug,Deserialize,Eq,PartialEq,Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ConversationListFilter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude_external_shared_channels: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub exclude_bot_users: Option<bool>
+    pub exclude_bot_users: Option<bool>,
 }
 
 #[derive(Deserialize, Debug, Serialize)]
@@ -672,7 +666,7 @@ pub struct User {
     pub local: Option<String>,
 }
 
-#[derive (Deserialize, Debug)]
+#[derive(Deserialize, Debug)]
 pub struct Profile {
     pub title: Option<String>,
     pub phone: Option<String>,
@@ -699,7 +693,7 @@ pub struct Profile {
     pub team: Option<String>,
 }
 
-#[derive(Debug,Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ChatPostMessage {
     pub channel: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -733,10 +727,10 @@ pub struct ChatPostMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unfurl_media: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>
+    pub username: Option<String>,
 }
 
-#[derive(Debug,Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ChatPostEphemeralMessage {
     pub channel: String,
     pub user: String,
@@ -759,10 +753,10 @@ pub struct ChatPostEphemeralMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_ts: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>
+    pub username: Option<String>,
 }
 
-#[derive(Debug,Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ChatUpdate {
     pub channel: String,
     pub ts: String,
@@ -781,10 +775,10 @@ pub struct ChatUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply_broadcast: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>
+    pub text: Option<String>,
 }
-    
-#[derive(Debug,Deserialize)]
+
+#[derive(Debug, Deserialize)]
 pub struct ChatPostMessageResponse {
     pub ok: bool,
     pub error: Option<String>,
@@ -799,71 +793,73 @@ impl<'de> Visitor<'de> for StringVisitor {
     type Value = String;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a string, boolean, integer, or floating-point \
-			     value")
+        formatter.write_str(
+            "a string, boolean, integer, or floating-point \
+                 value",
+        )
     }
 
     fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
     where
-	E: Error,
+        E: Error,
     {
-	Ok(format!("{}", v))
+        Ok(format!("{}", v))
     }
 
     fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
     where
-	E: Error,
+        E: Error,
     {
-	Ok(format!("{}", v))
+        Ok(format!("{}", v))
     }
 
     fn visit_i128<E>(self, v: i128) -> Result<Self::Value, E>
     where
-	E: Error,
+        E: Error,
     {
-	Ok(format!("{}", v))
+        Ok(format!("{}", v))
     }
 
     fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
     where
-	E: Error,
+        E: Error,
     {
-	Ok(format!("{}", v))
+        Ok(format!("{}", v))
     }
 
     fn visit_u128<E>(self, v: u128) -> Result<Self::Value, E>
     where
-	E: Error,
+        E: Error,
     {
-	Ok(format!("{}", v))
+        Ok(format!("{}", v))
     }
 
     fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
     where
-	E: Error,
+        E: Error,
     {
-	Ok(format!("{}", v))
+        Ok(format!("{}", v))
     }
 
     fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
     where
-	E: Error,
+        E: Error,
     {
-	Ok(String::from(v))
+        Ok(String::from(v))
     }
 
     fn visit_unit<E>(self) -> Result<Self::Value, E>
     where
-	E: Error,
+        E: Error,
     {
-	Ok(String::from("null"))
+        Ok(String::from("null"))
     }
 
     fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
-	D: Deserializer<'de>,
+        D: Deserializer<'de>,
     {
-	deserializer.deserialize_any(StringVisitor)
+        deserializer.deserialize_any(StringVisitor)
     }
 }
 
@@ -872,15 +868,15 @@ impl<'de> Deserialize<'de> for Timestamp {
     where
         D: Deserializer<'de>,
     {
-	deserializer.deserialize_any(StringVisitor).map(Timestamp)
+        deserializer.deserialize_any(StringVisitor).map(Timestamp)
     }
 }
 
 impl Serialize for Timestamp {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-	S: Serializer,
+        S: Serializer,
     {
-	serializer.serialize_str(&self.0)
+        serializer.serialize_str(&self.0)
     }
 }
