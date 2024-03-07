@@ -1,32 +1,44 @@
 use std::{
-    collections::HashMap, convert::{TryFrom, TryInto}, io::SeekFrom, ops::Deref, sync::{Arc, Mutex}
+    collections::HashMap,
+    convert::{TryFrom, TryInto},
+    io::SeekFrom,
+    ops::Deref,
+    sync::{Arc, Mutex},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use bytes::BytesMut;
 use deadpool_sqlite::Pool;
 use html_escape;
 use protobuf::Message as ProtobufMessage;
 use rusqlite::params;
-use tokio::{sync::broadcast, net::TcpStream, fs::File, io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt}, time::{Duration, self}};
-use tokio_rustls::{TlsConnector, rustls::{ClientConfig, RootCertStore, OwnedTrustAnchor, ServerName, Certificate}, client::TlsStream};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    net::TcpStream,
+    sync::broadcast,
+    time::{self, Duration},
+};
+use tokio_rustls::{
+    client::TlsStream,
+    rustls::{Certificate, ClientConfig, OwnedTrustAnchor, RootCertStore, ServerName},
+    TlsConnector,
+};
 use tokio_stream::{wrappers::BroadcastStream, StreamMap};
 use webpki_roots;
 
-use crate::{Message, Attachment};
+use crate::{Attachment, Message};
 
 mod cert_verifier;
 mod protocol;
 
-use cert_verifier::MumbleCertVerifier;
 use crate::protos::Mumble as mumble;
+use cert_verifier::MumbleCertVerifier;
 
 const TRANSPORT_NAME: &'static str = "Mumble";
 
 const MAX_PAYLOAD: usize = 8 * 1024 * 1024 + 6;
 const MUMBLE_VERSION: u32 = 1 << 16 | 4 << 8 | 0;
-
-
 
 enum Payload {
     Version,
@@ -66,43 +78,49 @@ pub(crate) struct Mumble {
     server_cert: Arc<Option<String>>,
     comment: Option<String>,
     stream: Option<TlsStream<TcpStream>>,
-    channels: HashMap<Arc<String>,(Option<Arc<mumble::ChannelState>>,broadcast::Sender<Message>)>,
-    channel_ids: HashMap<u32,Arc<mumble::ChannelState>>,
-    users: HashMap<u32,mumble::UserState>,
+    channels: HashMap<
+        Arc<String>,
+        (
+            Option<Arc<mumble::ChannelState>>,
+            broadcast::Sender<Message>,
+        ),
+    >,
+    channel_ids: HashMap<u32, Arc<mumble::ChannelState>>,
+    users: HashMap<u32, mumble::UserState>,
     pipo_id: Arc<Mutex<i64>>,
     pool: Pool,
     actor_id: Option<u32>,
 }
 
 impl Mumble {
-    pub async fn new(transport_id: usize,
-                     server: Arc<String>,
-                     password: Arc<Option<String>>,
-                     nickname: Arc<String>,
-                     client_cert: Arc<Option<String>>,
-                     server_cert: Arc<Option<String>>,
-                     comment: Option<&str>,
-                     bus_map: &HashMap<String,broadcast::Sender<Message>>,
-                     channel_mapping: &HashMap<Arc<String>,Arc<String>>,
-                     _voice_channel_mapping: &HashMap<Arc<String>,Arc<String>>,
-                     pipo_id: Arc<Mutex<i64>>,
-                     pool: Pool)
-                     -> anyhow::Result<Self>
-    {
+    pub async fn new(
+        transport_id: usize,
+        server: Arc<String>,
+        password: Arc<Option<String>>,
+        nickname: Arc<String>,
+        client_cert: Arc<Option<String>>,
+        server_cert: Arc<Option<String>>,
+        comment: Option<&str>,
+        bus_map: &HashMap<String, broadcast::Sender<Message>>,
+        channel_mapping: &HashMap<Arc<String>, Arc<String>>,
+        _voice_channel_mapping: &HashMap<Arc<String>, Arc<String>>,
+        pipo_id: Arc<Mutex<i64>>,
+        pool: Pool,
+    ) -> anyhow::Result<Self> {
         let comment = comment.map(|s| s.to_string());
         let stream = None;
-        let channels = channel_mapping.iter()
+        let channels = channel_mapping
+            .iter()
             .filter_map(|(channelname, busname)| {
                 if let Some(sender) = bus_map.get(busname.as_ref()) {
                     Some((channelname.clone(), (None, sender.clone())))
-                }
-                else {
-                    eprintln!("No bus named '{}' in configuration file.",
-                              busname);
+                } else {
+                    eprintln!("No bus named '{}' in configuration file.", busname);
 
                     None
                 }
-            }).collect();
+            })
+            .collect();
         let channel_ids = HashMap::new();
         let users = HashMap::new();
         let actor_id = None;
@@ -132,7 +150,10 @@ impl Mumble {
         let mut message = BytesMut::new();
         let mut input_buses = StreamMap::new();
         for (channel_name, (_, channel)) in self.channels.iter() {
-            input_buses.insert(channel_name.clone(), BroadcastStream::new(channel.subscribe()));
+            input_buses.insert(
+                channel_name.clone(),
+                BroadcastStream::new(channel.subscribe()),
+            );
         }
         #[allow(unreachable_code)]
         loop {
@@ -166,7 +187,7 @@ impl Mumble {
                                     if len > read_buf.len() {
                                         read_buf.resize(len - read_buf.len(), 0);
                                         message = read_buf.split_to(len);
-                                        
+
                                         break;
                                     }
                                     message = read_buf.split_to(len);
@@ -215,16 +236,12 @@ impl Mumble {
     async fn connect(&mut self) -> anyhow::Result<()> {
         eprintln!("Connecting...");
         let mut root_store = RootCertStore::empty();
-        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS
-                                            .iter()
-                                            .map(|ta| {
-                                                let subject = Vec::from(&*ta.subject);
-                                                let spki = Vec::from(&*ta.subject_public_key_info);
-                                                let name_constraints = ta.name_constraints.as_deref().map(|x| Vec::from(x));
-                                                OwnedTrustAnchor::from_subject_spki_name_constraints(subject,
-                                                                                                     spki,
-                                                                                                     name_constraints)
-                                            }));
+        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+            let subject = Vec::from(&*ta.subject);
+            let spki = Vec::from(&*ta.subject_public_key_info);
+            let name_constraints = ta.name_constraints.as_deref().map(|x| Vec::from(x));
+            OwnedTrustAnchor::from_subject_spki_name_constraints(subject, spki, name_constraints)
+        }));
         let config;
         if let Some(path) = self.server_cert.as_ref() {
             let mut file = File::open(path).await?;
@@ -242,21 +259,21 @@ impl Mumble {
                 .with_safe_defaults()
                 .with_custom_certificate_verifier(Arc::new(MumbleCertVerifier::new(cert)))
                 .with_no_client_auth();
-
-        }
-        else {
+        } else {
             config = ClientConfig::builder()
                 .with_safe_defaults()
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
         }
         let config = TlsConnector::from(Arc::new(config));
-        let (hostname, port) = self.server
+        let (hostname, port) = self
+            .server
             .split_once(":")
             .or(Some((&self.server, "64738")))
             .unwrap();
         let dns_name = ServerName::try_from(hostname)?;
-        let socket = TcpStream::connect(self.server.as_ref()).await
+        let socket = TcpStream::connect(self.server.as_ref())
+            .await
             .context("Failed to connect to the TCP socket")?;
         let mut stream = config.connect(dns_name, socket).await?;
         let mut message = mumble::Version::new();
@@ -292,120 +309,139 @@ impl Mumble {
         const OFFSET: usize = 6;
 
         let length = read_be_u32(&buffer[2..6]) as usize;
-        
+
         match read_be_u16(&buffer[..2]) {
             0 => {
-                let message = mumble::Version::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message = mumble::Version::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             1 => {
                 // UDPTunnel: Ignored
                 ()
-            },
+            }
             2 => {
-                let message = mumble::Authenticate::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::Authenticate::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             3 => {
-                let message = mumble::Ping::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message = mumble::Ping::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             4 => {
-                let message = mumble::Reject::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message = mumble::Reject::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
                 return Err(anyhow!("Server rejected the connection."));
-            },
+            }
             5 => {
-                let message = mumble::ServerSync::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::ServerSync::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
                 self.handle_server_sync_message(message).await;
-            },
+            }
             6 => {
-                let message = mumble::ChannelRemove::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::ChannelRemove::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
                 self.handle_channel_remove_message(message).await;
-            },
+            }
             7 => {
-                let message = mumble::ChannelState::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::ChannelState::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
                 self.handle_channel_state_message(message).await;
-            },
+            }
             8 => {
-                let message = mumble::UserRemove::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::UserRemove::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
                 self.handle_user_remove_message(message).await;
-            },
+            }
             9 => {
-                let message = mumble::UserState::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::UserState::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
                 self.handle_user_state_message(message).await;
-            },
+            }
             10 => {
-                let message = mumble::BanList::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message = mumble::BanList::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             11 => {
-                let message = mumble::TextMessage::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::TextMessage::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
                 self.handle_text_message_message(message).await;
-            },
+            }
             12 => {
-                let message = mumble::PermissionDenied::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::PermissionDenied::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             13 => {
-                let message = mumble::ACL::parse_from_bytes(&buffer[OFFSET..length+OFFSET])?;
+                let message = mumble::ACL::parse_from_bytes(&buffer[OFFSET..length + OFFSET])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             14 => {
-                let message = mumble::QueryUsers::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::QueryUsers::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             15 => {
-                let message = mumble::CryptSetup::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::CryptSetup::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             16 => {
-                let message = mumble::ContextActionModify::parse_from_bytes(&buffer[6..OFFSET+length])?;
+                let message =
+                    mumble::ContextActionModify::parse_from_bytes(&buffer[6..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             17 => {
-                let message = mumble::ContextAction::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::ContextAction::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             18 => {
-                let message = mumble::UserList::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message = mumble::UserList::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             19 => {
-                let message = mumble::VoiceTarget::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::VoiceTarget::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             20 => {
-                let message = mumble::PermissionQuery::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::PermissionQuery::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             21 => {
-                let message = mumble::CodecVersion::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::CodecVersion::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             22 => {
-                let message = mumble::UserStats::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::UserStats::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             23 => {
-                let message = mumble::RequestBlob::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::RequestBlob::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             24 => {
-                let message = mumble::ServerConfig::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::ServerConfig::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
+            }
             25 => {
-                let message = mumble::SuggestConfig::parse_from_bytes(&buffer[OFFSET..OFFSET+length])?;
+                let message =
+                    mumble::SuggestConfig::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
                 print_protobuf_message(&message as &dyn ProtobufMessage);
-            },
-            _ => unimplemented!()
+            }
+            _ => unimplemented!(),
         }
 
         Ok(())
@@ -414,13 +450,18 @@ impl Mumble {
     async fn handle_server_sync_message(&mut self, message: mumble::ServerSync) {
         let actor_id = match self.actor_id {
             Some(id) => id,
-            None => return
+            None => return,
         };
         let mut user = mumble::UserState::new();
         user.set_actor(actor_id);
         user.set_self_mute(true);
         user.set_self_deaf(true);
-        user.set_listening_channel_add(self.channel_ids.keys().map(|id| id.clone()).collect::<Vec<u32>>());
+        user.set_listening_channel_add(
+            self.channel_ids
+                .keys()
+                .map(|id| id.clone())
+                .collect::<Vec<u32>>(),
+        );
 
         let packet = match build_packet(Payload::UserState as u16, &user) {
             Ok(p) => p,
@@ -454,7 +495,7 @@ impl Mumble {
             }
 
             let rc = Arc::new(message);
-            
+
             self.channel_ids.remove(&channel_id);
             channel.0 = None;
         }
@@ -466,7 +507,7 @@ impl Mumble {
                 channel.0 = None;
             }
         }
-    }    
+    }
 
     async fn handle_user_state_message(&mut self, mut message: mumble::UserState) {
         // Use the session ID as the actor index because ???
@@ -489,16 +530,23 @@ impl Mumble {
         let session = message.get_session();
 
         self.users.remove(&session);
-    }    
+    }
 
-    async fn handle_text_message_message(&mut self, message: mumble::TextMessage)
-        -> anyhow::Result<()> {
+    async fn handle_text_message_message(
+        &mut self,
+        message: mumble::TextMessage,
+    ) -> anyhow::Result<()> {
         for channel_id in message.get_channel_id().iter() {
             if let Some(channel) = self.channel_ids.get(&channel_id) {
                 if let Some(bus) = self.channels.get(&channel.get_name().to_string()) {
                     let pipo_id = self.insert_into_messages_table().await?;
-                    let username = self.users.get(&message.get_actor())
-                        .ok_or(anyhow!("No user found for actor ID {}", message.get_actor()))?
+                    let username = self
+                        .users
+                        .get(&message.get_actor())
+                        .ok_or(anyhow!(
+                            "No user found for actor ID {}",
+                            message.get_actor()
+                        ))?
                         .get_name()
                         .to_string();
 
@@ -509,12 +557,14 @@ impl Mumble {
                         username,
                         avatar_url: None,
                         thread: None,
-                        message: Some(html_escape::decode_html_entities(message.get_message()).to_string()),
+                        message: Some(
+                            html_escape::decode_html_entities(message.get_message()).to_string(),
+                        ),
                         attachments: None,
                         is_edit: false,
                         irc_flag: false,
                     };
-                    
+
                     bus.1
                         .send(message)
                         .context(format!("Couldn't send message"))?;
@@ -537,95 +587,103 @@ impl Mumble {
         Ok(())
     }
 
-    async fn handle_pipo_message(&mut self,
-                                 channel: &str,
-                                 message: Message)
-                                 -> anyhow::Result<()> {
+    async fn handle_pipo_message(&mut self, channel: &str, message: Message) -> anyhow::Result<()> {
         match message {
-	    Message::Action {
-		sender,
-		transport,
-		username,
-		message,
-		attachments,
-		is_edit,
+            Message::Action {
+                sender,
+                transport,
+                username,
+                message,
+                attachments,
+                is_edit,
                 ..
             } => {
-		if sender != self.transport_id {
-                    self.handle_pipo_action_message(&channel,
-                                                    &transport,
-                                                    &username,
-                                                    message.as_deref(),
-                                                    attachments,
-                                                    is_edit).await
-                        .context("Failed to send TextMessage to Mumble")?;
-		}
-
-                Ok(())
-	    },
-	    Message::Bot { .. } => {
-                // TODO
-                Ok(())
-	    },
-	    Message::Delete { .. } => {
-                // Not handled
-                Ok(())
-	    },
-	    Message::Names {
-		sender,
-		transport: _,
-		username,
-		message,
-	    } => {
-                // TODO
-                Ok(())
-	    },
-	    Message::Pin { .. } => {
-                // Not handled
-                Ok(())
-	    },
-	    Message::Reaction { .. } => {
-                // Not handled
-                Ok(())
-	    },
-	    Message::Text {
-		sender,
-		transport,
-		username,
-		message,
-		attachments,
-		is_edit,
-                ..
-	    } => {
-		if sender != self.transport_id {
-                    self.handle_pipo_text_message(&channel,
-                                                  &transport,
-                                                  &username,
-                                                  message.as_deref(),
-                                                  attachments,
-                                                  is_edit).await
+                if sender != self.transport_id {
+                    self.handle_pipo_action_message(
+                        &channel,
+                        &transport,
+                        &username,
+                        message.as_deref(),
+                        attachments,
+                        is_edit,
+                    )
+                    .await
                     .context("Failed to send TextMessage to Mumble")?;
-		}
+                }
 
                 Ok(())
-	    },
-	}
+            }
+            Message::Bot { .. } => {
+                // TODO
+                Ok(())
+            }
+            Message::Delete { .. } => {
+                // Not handled
+                Ok(())
+            }
+            Message::Names {
+                sender,
+                transport: _,
+                username,
+                message,
+            } => {
+                // TODO
+                Ok(())
+            }
+            Message::Pin { .. } => {
+                // Not handled
+                Ok(())
+            }
+            Message::Reaction { .. } => {
+                // Not handled
+                Ok(())
+            }
+            Message::Text {
+                sender,
+                transport,
+                username,
+                message,
+                attachments,
+                is_edit,
+                ..
+            } => {
+                if sender != self.transport_id {
+                    self.handle_pipo_text_message(
+                        &channel,
+                        &transport,
+                        &username,
+                        message.as_deref(),
+                        attachments,
+                        is_edit,
+                    )
+                    .await
+                    .context("Failed to send TextMessage to Mumble")?;
+                }
 
+                Ok(())
+            }
+        }
     }
 
-    async fn handle_pipo_action_message(&mut self,
-                                        channel: &str,
-                                        transport: &str,
-                                        username: &str,
-                                        message: Option<&str>,
-                                        _attachments: Option<Vec<Attachment>>,
-                                        is_edit: bool) -> anyhow::Result<()> {
-        let message_text = format!("{}<i>*{}!<font color=\"#3ae\"><b>{}</b></font> {}</i>",
-                                   if is_edit { "<b>EDIT:</b> "} else { "" },
-                                   html_escape::encode_text(&transport[..1].to_uppercase()),
-                                   html_escape::encode_text(username),
-                                   html_escape::encode_text(message.ok_or(anyhow!("Action Message contains no message"))?));
-        let actor_id = self.actor_id.ok_or(anyhow!("PIPO does not have an actor ID"))?;
+    async fn handle_pipo_action_message(
+        &mut self,
+        channel: &str,
+        transport: &str,
+        username: &str,
+        message: Option<&str>,
+        _attachments: Option<Vec<Attachment>>,
+        is_edit: bool,
+    ) -> anyhow::Result<()> {
+        let message_text = format!(
+            "{}<i>*{}!<font color=\"#3ae\"><b>{}</b></font> {}</i>",
+            if is_edit { "<b>EDIT:</b> " } else { "" },
+            html_escape::encode_text(&transport[..1].to_uppercase()),
+            html_escape::encode_text(username),
+            html_escape::encode_text(message.ok_or(anyhow!("Action Message contains no message"))?)
+        );
+        let actor_id = self
+            .actor_id
+            .ok_or(anyhow!("PIPO does not have an actor ID"))?;
         if let Some(channel_id) = (|| self.channels.get(&channel.to_string())?.0.as_ref())() {
             let mut message = mumble::TextMessage::new();
             message.set_actor(actor_id);
@@ -638,25 +696,31 @@ impl Mumble {
                 bytes_sent += self.stream.as_mut().unwrap().write(&packet).await?;
             }
 
-            return Ok(())
+            return Ok(());
         }
 
         Err(anyhow!("Couldn't find channel ID for channel {}", channel))
     }
 
-    async fn handle_pipo_text_message(&mut self,
-                                      channel: &str,
-                                      transport: &str,
-                                      username: &str,
-                                      message: Option<&str>,
-                                      _attachments: Option<Vec<Attachment>>,
-                                      is_edit: bool) -> anyhow::Result<()> {
-        let message_text = format!("{}!<font color=\"#3ae\"><b>{}</b></font>: {}{}",
-                                   html_escape::encode_text(&transport[..1].to_uppercase()),
-                                   html_escape::encode_text(username),
-                                   if is_edit { "<b>EDIT:</b> "} else { "" },
-                                   html_escape::encode_text(message.ok_or(anyhow!("TextMessage contains no message"))?));
-        let actor_id = self.actor_id.ok_or(anyhow!("PIPO does not have an actor ID"))?;
+    async fn handle_pipo_text_message(
+        &mut self,
+        channel: &str,
+        transport: &str,
+        username: &str,
+        message: Option<&str>,
+        _attachments: Option<Vec<Attachment>>,
+        is_edit: bool,
+    ) -> anyhow::Result<()> {
+        let message_text = format!(
+            "{}!<font color=\"#3ae\"><b>{}</b></font>: {}{}",
+            html_escape::encode_text(&transport[..1].to_uppercase()),
+            html_escape::encode_text(username),
+            if is_edit { "<b>EDIT:</b> " } else { "" },
+            html_escape::encode_text(message.ok_or(anyhow!("TextMessage contains no message"))?)
+        );
+        let actor_id = self
+            .actor_id
+            .ok_or(anyhow!("PIPO does not have an actor ID"))?;
         if let Some(channel_id) = (|| self.channels.get(&channel.to_string())?.0.as_ref())() {
             let mut message = mumble::TextMessage::new();
             message.set_actor(actor_id);
@@ -669,29 +733,37 @@ impl Mumble {
                 bytes_sent += self.stream.as_mut().unwrap().write(&packet).await?;
             }
 
-            return Ok(())
+            return Ok(());
         }
 
         Err(anyhow!("Couldn't find channel ID for channel {}", channel))
-    }    
+    }
 
     async fn insert_into_messages_table(&self) -> anyhow::Result<i64> {
         let conn = self.pool.get().await.unwrap();
         let pipo_id = *self.pipo_id.lock().unwrap();
 
         // TODO: ugly error handling needs fixing
-        match conn.interact(move |conn| -> anyhow::Result<usize> {
-            Ok(conn.execute("INSERT OR REPLACE INTO messages (id)
-                             VALUES (?1)", params![pipo_id])?)
-        }).await {
+        match conn
+            .interact(move |conn| -> anyhow::Result<usize> {
+                Ok(conn.execute(
+                    "INSERT OR REPLACE INTO messages (id)
+                             VALUES (?1)",
+                    params![pipo_id],
+                )?)
+            })
+            .await
+        {
             Ok(res) => res,
-            Err(_) => Err(anyhow!("Interact Error"))
+            Err(_) => Err(anyhow!("Interact Error")),
         }?;
 
         let ret = pipo_id;
         let mut pipo_id = self.pipo_id.lock().unwrap();
         *pipo_id += 1;
-        if *pipo_id > 40000 { *pipo_id = 0 }
+        if *pipo_id > 40000 {
+            *pipo_id = 0
+        }
 
         Ok(ret)
     }
@@ -713,8 +785,7 @@ fn print_protobuf_message(message: &dyn ProtobufMessage) {
     }
 }
 
-fn build_packet(typ: u16, message: &dyn ProtobufMessage)
-                -> anyhow::Result<Vec<u8>> {
+fn build_packet(typ: u16, message: &dyn ProtobufMessage) -> anyhow::Result<Vec<u8>> {
     let mut packet = Vec::new();
 
     packet.extend_from_slice(&typ.to_be_bytes());
