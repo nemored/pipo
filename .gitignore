@@ -7,3 +7,14 @@
 .dev.env
 .env
 .vagrant/
+
+# Elixir
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+pipo-*.tar
+/tmp/
