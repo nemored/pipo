@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::anyhow;
 use async_recursion::async_recursion;
+use chrono::{DateTime, Utc};
 use deadpool_sqlite::Pool;
 use futures::{
     stream::{SplitSink, SplitStream, StreamExt as FuturesStreamExt},
@@ -44,6 +45,7 @@ pub(crate) struct Slack {
     channel_map: HashMap<String, String>,
     id_map: HashMap<String, String>,
     users: HashMap<String, User>,
+    events_received: HashMap<String, DateTime<Utc>>,
 }
 
 struct WebSocket {
@@ -92,6 +94,7 @@ impl Slack {
             channel_map: HashMap::new(),
             id_map: HashMap::new(),
             users: HashMap::new(),
+            events_received: HashMap::new(),
         })
     }
 
@@ -1194,6 +1197,23 @@ impl Slack {
         Ok(())
     }
 
+    fn update_envelope_state(&mut self, envelope_id: String) -> bool {
+        let ret = self
+            .events_received
+            .insert(envelope_id, Utc::now())
+            .is_none();
+        let mut events = self
+            .events_received
+            .iter()
+            .map(|(a, b)| (a.clone(), b.clone()))
+            .collect::<Vec<_>>();
+        events.sort_by_key(|(_, b)| *b);
+        let start = events.len().saturating_sub(1024);
+        self.events_received = events[start..].iter().cloned().collect();
+
+        ret
+    }
+
     async fn handle_response(&mut self, cid: usize, response: Response) -> anyhow::Result<()> {
         match response {
             Response::Disconnect {
@@ -1223,7 +1243,11 @@ impl Slack {
                 payload,
             } => {
                 self.acknowledge(&envelope_id).await?;
-                self.handle_event_payload(payload).await
+                if self.update_envelope_state(envelope_id) {
+                    self.handle_event_payload(payload).await
+                } else {
+                    Ok(())
+                }
             }
             Response::Hello {
                 num_connections: _,
@@ -1236,8 +1260,12 @@ impl Slack {
                 payload,
             } => {
                 self.acknowledge(&envelope_id).await?;
-                self.handle_slash_command_payload(accepts_response_payload, payload)
-                    .await
+                if self.update_envelope_state(envelope_id) {
+                    self.handle_slash_command_payload(accepts_response_payload, payload)
+                        .await
+                } else {
+                    Ok(())
+                }
             }
             Response::Unhandled { error } => Err(anyhow!("Unhandled response type: {}", error)),
         }
