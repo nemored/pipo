@@ -289,7 +289,8 @@ pub async fn inner_main() -> anyhow::Result<()> {
                                            modtime   DEFAULT 
                                              (strftime('%Y-%m-%d %H:%M:%S:%s',
                                                        'now', 
-                                                       'localtime'))
+                                                       'localtime')),
+                                           edited    TEXT
                                            );
                                         CREATE TRIGGER updatemodtime
                                         BEFORE update ON messages

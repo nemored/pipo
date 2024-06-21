@@ -165,8 +165,8 @@ pub struct PinnedInfo {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Edited {
-    user: Option<String>,
-    ts: Option<String>,
+    pub user: Option<String>,
+    pub ts: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

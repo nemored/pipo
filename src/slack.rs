@@ -319,27 +319,27 @@ impl Slack {
                 }
             message
                 = StreamExt::next(&mut self.websocket.ws_stream) => {
-                // eprintln!("WS Message: {:?}", message);
+                eprintln!("WS Message: {:?}", message);
                 match message {
                     Some((cid, Ok(message))) => {
-                    if message.is_text() {
-                        // eprintln!("<- Slack: {:?}", message);
-                        let response: Response
-                        = serde_json::from_str(&message
-                                       .to_text()
-                                       .unwrap())
-                        .unwrap_or_else(|e| {
-                            Response::Unhandled {
-                            error: e.to_string(),
+                        if message.is_text() {
+                            // eprintln!("<- Slack: {:?}", message);
+                            let response: Response
+                            = serde_json::from_str(&message
+                                        .to_text()
+                                        .unwrap())
+                            .unwrap_or_else(|e| {
+                                Response::Unhandled {
+                                error: e.to_string(),
+                                }
+                            });
+                            if let Err(e)
+                            = self.handle_response(cid,
+                                        response).await
+                            {
+                            eprintln!("{}\n{}", e, message);
                             }
-                        });
-                        if let Err(e)
-                        = self.handle_response(cid,
-                                       response).await
-                        {
-                        eprintln!("{}\n{}", e, message);
                         }
-                    }
                     },
                     Some((cid, Err(e))) => {
                     eprintln!("WebSocket error: {:#}", e);
@@ -1345,6 +1345,15 @@ impl Slack {
                 channel_type: _,
                 edited,
             }) => {
+                dbg!(subtype.as_deref());
+                if !is_edit {
+                    if let Some(ref pipo_id) = ts {
+                        if self.select_id_from_messages(&pipo_id).await.is_some() {
+                            dbg!("Ignoring duplicate message.");
+                            return Ok(())
+                        }
+                    }
+                }
                 let irc_flag = match edited {
                     Some(_) => false,
                     None => true,
@@ -1443,6 +1452,7 @@ impl Slack {
                                     message,
                                     prev_message,
                                     hidden,
+                                    edited,
                                 )
                                 .await
                         }
@@ -1679,12 +1689,13 @@ impl Slack {
 
     async fn handle_message_changed(
         &mut self,
-        _ts: Option<String>,
+        ts: Option<String>,
         _thread_ts: Option<String>,
         channel: &str,
         message: Option<Box<Event>>,
         _previous_message: Option<Box<Event>>,
         hidden: bool,
+        edited: Option<Edited>,
     ) -> anyhow::Result<()> {
         if message.is_none() {
             return Err(anyhow!("No updated message present in event."));
@@ -1695,6 +1706,16 @@ impl Slack {
             Some(s) => s,
             None => return Err(anyhow!("Could not find id for channel {}", channel)),
         };
+
+        if let Some(ref pipo_id) = ts {
+            if let Some(last_edited) = self.select_edited_from_messages(&pipo_id).await {
+                if let Some(Edited { ts: Some(edited), .. }) = edited {
+                    if edited == last_edited {
+                        dbg!("Ignoring duplicate message.");
+                        return Ok(())}
+                }
+            }
+        }
 
         let event = match msg {
             Event::Message(SlackMessage {
@@ -1836,6 +1857,35 @@ impl Slack {
         }
 
         Ok(())
+    }
+
+    async fn select_edited_from_messages(&self, ts: &str) -> Option<String> {
+        let conn = self.pool.get().await.unwrap();
+        let old_ts = ts;
+        let ts = String::from(old_ts);
+
+        // TODO: ugly error handling needs fixing
+        let ret = match conn
+            .interact(move |conn| -> anyhow::Result<String> {
+                // Slack::debug_print_messages(&conn)?;
+
+                Ok(conn.query_row(
+                    "SELECT edited FROM messages WHERE slackid = ?1",
+                    params![ts],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+            .unwrap_or_else(|_| Err(anyhow!("Interact Error")))
+        {
+            Ok(id) => Some(id),
+            Err(e) => {
+                eprintln!("Error#: {}", e);
+                None
+            }
+        };
+
+        ret
     }
 
     async fn select_id_from_messages(&self, ts: &str) -> Option<i64> {
