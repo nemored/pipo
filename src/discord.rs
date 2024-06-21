@@ -307,7 +307,7 @@ impl RealHandler {
         // authentication error, or lack of permissions to post in the
         // channel, so log to stdout when some error happens, with a
         // description of it.
-        eprintln!("Author: {:#?}", msg.author);
+        //eprintln!("Author: {:#?}", msg.author);
         let http = CacheHttp::http(&ctx);
         if msg.author.bot {
             return;
@@ -1655,11 +1655,11 @@ impl Discord {
         } else {
             let id = self.shared.get_webhook_id(channel);
 
-            eprintln!("Webhook ID: {:?}", id);
+            //eprintln!("Webhook ID: {:?}", id);
 
             if let Some(id) = id {
                 if let Ok(wh) = id.to_webhook(http).await {
-                    eprintln!("Webhook: {:?}", wh);
+                    //eprintln!("Webhook: {:?}", wh);
                     if let Ok(msg) = wh
                         .execute(http, true, |f| {
                             let ret = f.content(content.clone()).username(format!(
@@ -1671,13 +1671,13 @@ impl Discord {
                                 ret.avatar_url(url);
                             }
 
-                            eprintln!("Message content: {:?}", ret);
+                            //eprintln!("Message content: {:?}", ret);
 
                             ret
                         })
                         .await
                     {
-                        eprintln!("Message: {:?}", msg);
+                        //eprintln!("Message: {:?}", msg);
                         return self.update_messages_table(pipo_id, msg.unwrap()).await;
                     }
                 }
@@ -1855,11 +1855,11 @@ impl Discord {
         } else {
             let id = self.shared.get_webhook_id(channel);
 
-            eprintln!("Webhook ID: {:?}", id);
+            //eprintln!("Webhook ID: {:?}", id);
 
             if let Some(id) = id {
                 if let Ok(wh) = id.to_webhook(http).await {
-                    eprintln!("Webhook: {:?}", wh);
+                    //eprintln!("Webhook: {:?}", wh);
                     if let Ok(msg) = wh
                         .execute(http, true, |f| {
                             let ret = f.content(content.clone()).username(format!(
@@ -1871,13 +1871,13 @@ impl Discord {
                                 ret.avatar_url(url);
                             }
 
-                            eprintln!("Message content: {:?}", ret);
+                            //eprintln!("Message content: {:?}", ret);
 
                             ret
                         })
                         .await
                     {
-                        eprintln!("Message: {:?}", msg);
+                        //eprintln!("Message: {:?}", msg);
                         return self.update_messages_table(pipo_id, msg.unwrap()).await;
                     }
                 }
