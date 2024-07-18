@@ -363,6 +363,7 @@ impl Slack {
                         if Instant::now() - last_attempt > connection_interval {
                             if self.connect_websocket().await.is_ok() {
                                 connection_interval = Duration::from_secs(Self::BASE_DELAY);
+                                delay_exponent = 0;
                             } else {
                                 connection_interval = match connection_interval.as_secs() {
                                     Self::MAX_DELAY => connection_interval,
