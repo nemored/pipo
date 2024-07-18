@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex}, time::Duration,
 };
 
 use anyhow::anyhow;
@@ -20,7 +20,7 @@ use reqwest::{
 };
 use rusqlite::params;
 use serde_json::Value;
-use tokio::{net::TcpStream, sync::broadcast};
+use tokio::{net::TcpStream, sync::broadcast, time::Instant};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt, StreamMap};
 use tokio_tungstenite::*;
 
@@ -56,6 +56,9 @@ struct WebSocket {
 }
 
 impl Slack {
+    const BASE_DELAY: u64 = 5;
+    const MAX_DELAY: u64 = 5 * 60;
+
     pub async fn new(
         transport_id: usize,
         bus_map: &HashMap<String, broadcast::Sender<Message>>,
@@ -100,6 +103,10 @@ impl Slack {
 
     pub async fn connect(&mut self) -> anyhow::Result<()> {
         self.connect_websocket().await?;
+
+        let mut last_attempt = Instant::now();
+        let mut connection_interval = Duration::from_secs(Self::BASE_DELAY);
+        let mut delay_exponent = 0;
 
         let mut headers = HeaderMap::new();
 
@@ -342,17 +349,33 @@ impl Slack {
                         }
                     },
                     Some((cid, Err(e))) => {
-                    eprintln!("WebSocket error: {:#}", e);
-                    if let Some(s) = self.websocket.ws_stream
-                        .remove(&cid) {
-                        s.reunite(self.websocket.ws_sink.take()
-                              .unwrap()).unwrap()
-                            .close(None).await
-                            .unwrap_or_else(|_| ());
-                        }
-                    self.connect_websocket().await?;
+                        eprintln!("WebSocket error: {:#}", e);
+                        if let Some(s) = self.websocket.ws_stream
+                            .remove(&cid) {
+                            s.reunite(self.websocket.ws_sink.take()
+                                .unwrap()).unwrap()
+                                .close(None).await
+                                .unwrap_or_else(|_| ());
+                            }
+                        let _ = self.connect_websocket().await;
                     },
-                    None => return Ok(()),
+                    None => {
+                        if Instant::now() - last_attempt > connection_interval {
+                            if self.connect_websocket().await.is_ok() {
+                                connection_interval = Duration::from_secs(Self::BASE_DELAY);
+                            } else {
+                                connection_interval = match connection_interval.as_secs() {
+                                    Self::MAX_DELAY => connection_interval,
+                                    _ => {
+                                        let secs = Self::MAX_DELAY.min(Self::BASE_DELAY * 2_u64.pow(delay_exponent));
+                                        delay_exponent += 1;
+                                        Duration::from_secs(secs)
+                                    }
+                                }
+                            }
+                            last_attempt = Instant::now();
+                        }
+                    },
                 }
                 }
             else => { break }
@@ -406,6 +429,7 @@ impl Slack {
         self.websocket
             .ws_stream
             .insert(self.websocket.next_connection_id, stream);
+        // TODO: Fix possible overflow
         self.websocket.next_connection_id += 1;
 
         Ok(())
@@ -1229,8 +1253,10 @@ impl Slack {
                         .unwrap()
                         .reunite(self.websocket.ws_sink.take().unwrap())
                         .unwrap();
-                    self.connect_websocket().await?;
-                    prev_sock.close(None).await?;
+                    match self.connect_websocket().await {
+                        Ok(_) => prev_sock.close(None).await?,
+                        Err(_) => ()
+                    }
                     Ok(())
                 }
                 _ => Ok(()),
