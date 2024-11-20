@@ -1,0 +1,57 @@
+#!/usr/bin/env ansible-playbook
+---
+- name: register app service on synapse server
+  hosts: server_pipo:server_synapse
+  remote_user: root
+
+  tasks:
+    - name: set pipo_registration_file
+      set_fact:
+        pipo_registration_file: "{{ hostvars[inventory_hostname].pipo_registration_file | default('') }}"
+
+    - name: fetch pipo registration file from app service
+      ansible.builtin.fetch:
+        src: "{{ pipo_registration_file }}"
+        dest: tmp/
+      when: pipo_registration_file | length() > 0
+
+    - name: set pipo_appservice
+      set_fact:
+        pipo_appservice: "{{ hostvars[inventory_hostname].pipo_appservice | default('') }}"
+
+    - name: copy pipo registration file to synapse server
+      ansible.builtin.copy:
+        src: "tmp/{{ pipo_appservice }}/{{ hostvars[pipo_appservice].pipo_registration_file }}"
+        dest: "{{ hostvars[inventory_hostname].synapse_data_path }}/"
+      when: pipo_appservice | length() > 0
+
+    - name: set synapse_data_path
+      set_fact:
+        synapse_data_path: "{{ hostvars[inventory_hostname].synapse_data_path | default('') }}"
+
+    - name: add registration file path
+      ansible.builtin.blockinfile:
+        path: "{{ synapse_data_path }}/homeserver.yaml"
+        insertafter: "app_service_config_files:"
+        marker: "# {mark} registration for pipo {{ inventory_hostname }}"
+        block: "  - \"/data/{{ hostvars[pipo_appservice].pipo_registration_file | basename }}\""
+      when: synapse_data_path | length() > 0
+
+    - name: set synapse_container_name
+      set_fact:
+        synapse_container_name: "{{ hostvars[inventory_hostname].synapse_container_name | default('') }}"
+
+    - name: synapse docker
+      community.docker.docker_container:
+        name: "{{ synapse_container_name }}"
+        image: docker.io/matrixdotorg/synapse:latest
+        image_name_mismatch: ignore
+        state: started
+        restart: true
+        env:
+          SYNAPSE_CONFIG_PATH: "/data/homeserver.yaml"
+        volumes:
+          - "{{ synapse_data_path }}:/data"
+        ports:
+          - 8008:8008/tcp
+      when: synapse_container_name | length() > 0
