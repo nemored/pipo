@@ -23,7 +23,7 @@ lazy_static = "1.5"
 nix = "0.29"
 #parser = { path = "./parser" }
 protobuf = "2"
-regex = "1.10"
+regex = "1.11"
 reqwest = "0.11"
 rusqlite = "0.28"
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
