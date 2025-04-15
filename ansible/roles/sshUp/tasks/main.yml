@@ -1,0 +1,41 @@
+---
+- name: set hasProfile
+  set_fact:
+    hasProfile: "{{ hostvars[inventory_hostname][profile] is defined }}"
+
+- name: set params
+  set_fact:
+    params: "{{ hostvars[item][profile] }}"
+  loop: "{{ ansible_play_hosts }}"
+  when: hostvars[item][profile] is defined
+
+- name: configure sudo
+  copy:
+    dest: /etc/sudoers.d/ansible-sudoers
+    content: |
+      %sudo ALL=(ALL:ALL) NOPASSWD: ALL
+  when: not hasProfile
+
+- name: fetch id_rsa.pub
+  fetch:
+    src: "/home/{{ params.from.user }}/.ssh/id_rsa.pub"
+    dest: tmp/
+  when: hasProfile
+
+- name: "create/update user: {{ params.to.user }}"
+  user:
+    name: "{{ params.to.user }}"
+    group: sudo
+    append: true
+    groups: "{{ params.to.groups | default('sudo') }}"
+    generate_ssh_key: yes
+  when: not hasProfile
+
+- name: copy id_rsa.pub
+  blockinfile:
+    path: "/home/{{ params.to.user }}/.ssh/authorized_keys"
+    marker: "# {mark} sshUp for {{ params.from.user }}@{{ item }}"
+    create: true
+    block: "{{ lookup('ansible.builtin.file', 'tmp/' + item + '/home/' + params.from.user + '/.ssh/id_rsa.pub') }}"
+  when: not hasProfile and hostvars[item][profile] is defined
+  loop: "{{ ansible_play_hosts }}"
