@@ -2507,6 +2507,61 @@ impl Slack {
     }
 
     async fn get_user_info(&self, user: &str) -> anyhow::Result<User> {
+        if let Some(cached_user) = self
+            .users
+            .values()
+            .find(|cached_user| cached_user.id.as_deref() == Some(user))
+        {
+            return Ok(User {
+                id: cached_user.id.clone(),
+                team_id: cached_user.team_id.clone(),
+                name: cached_user.name.clone(),
+                deleted: cached_user.deleted,
+                color: cached_user.color.clone(),
+                real_name: cached_user.real_name.clone(),
+                tz: cached_user.tz.clone(),
+                tz_label: cached_user.tz_label.clone(),
+                tz_offset: cached_user.tz_offset,
+                profile: cached_user.profile.as_ref().map(|profile| Profile {
+                    title: profile.title.clone(),
+                    phone: profile.phone.clone(),
+                    skype: profile.skype.clone(),
+                    real_name: profile.real_name.clone(),
+                    real_name_normalized: profile.real_name_normalized.clone(),
+                    display_name: profile.display_name.clone(),
+                    display_name_normalized: profile.display_name_normalized.clone(),
+                    status_text: profile.status_text.clone(),
+                    status_emoji: profile.status_emoji.clone(),
+                    status_expiration: profile.status_expiration,
+                    avatar_hash: profile.avatar_hash.clone(),
+                    first_name: profile.first_name.clone(),
+                    last_name: profile.last_name.clone(),
+                    email: profile.email.clone(),
+                    image_original: profile.image_original.clone(),
+                    image_24: profile.image_24.clone(),
+                    image_32: profile.image_32.clone(),
+                    image_48: profile.image_48.clone(),
+                    image_72: profile.image_72.clone(),
+                    image_192: profile.image_192.clone(),
+                    image_512: profile.image_512.clone(),
+                    image_1024: profile.image_1024.clone(),
+                    team: profile.team.clone(),
+                }),
+                is_admin: cached_user.is_admin,
+                is_owner: cached_user.is_owner,
+                is_primary_owner: cached_user.is_primary_owner,
+                is_restricted: cached_user.is_restricted,
+                is_ultra_restricted: cached_user.is_ultra_restricted,
+                is_bot: cached_user.is_bot,
+                is_stranger: cached_user.is_stranger,
+                updated: cached_user.updated,
+                is_app_user: cached_user.is_app_user,
+                is_invited_user: cached_user.is_invited_user,
+                has_2fa: cached_user.has_2fa,
+                local: cached_user.local.clone(),
+            });
+        }
+
         let mut headers = HeaderMap::new();
 
         headers.insert(
@@ -2597,5 +2652,338 @@ impl Slack {
             }
         }
         text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deadpool_sqlite::{Config, Runtime};
+    use serde_json::json;
+    use std::{
+        path::PathBuf,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    async fn setup_slack_test_harness() -> (Slack, broadcast::Receiver<Message>) {
+        let mut db_path = PathBuf::from(std::env::temp_dir());
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        db_path.push(format!("pipo-slack-test-{}.sqlite3", ts));
+
+        let pool = Config::new(db_path.to_str().unwrap())
+            .create_pool(Runtime::Tokio1)
+            .unwrap();
+
+        pool.get()
+            .await
+            .unwrap()
+            .interact(|conn| -> anyhow::Result<()> {
+                conn.execute_batch(
+                    "CREATE TABLE messages (
+                        id        INTEGER PRIMARY KEY,
+                        slackid   TEXT,
+                        discordid INTEGER,
+                        modtime   TEXT
+                     );",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap()
+            .unwrap();
+
+        let (tx, rx) = broadcast::channel(32);
+        let mut bus_map = HashMap::new();
+        bus_map.insert("main".to_string(), tx);
+
+        let mut channel_mapping = HashMap::new();
+        channel_mapping.insert(
+            Arc::new("#general".to_string()),
+            Arc::new("main".to_string()),
+        );
+
+        let mut slack = Slack::new(
+            1,
+            &bus_map,
+            Arc::new(Mutex::new(1)),
+            pool,
+            "test-token".to_string(),
+            "test-bot-token".to_string(),
+            &channel_mapping,
+        )
+        .await
+        .unwrap();
+
+        slack
+            .id_map
+            .insert("C123".to_string(), "#general".to_string());
+        slack
+            .channel_map
+            .insert("#general".to_string(), "C123".to_string());
+        slack.users.insert(
+            "Test User".to_string(),
+            serde_json::from_value(json!({
+                "id": "U123",
+                "name": "test-user",
+                "profile": {
+                    "display_name": "Test User"
+                }
+            }))
+            .unwrap(),
+        );
+
+        (slack, rx)
+    }
+
+    fn drain_messages(rx: &mut broadcast::Receiver<Message>) -> Vec<Message> {
+        let mut out = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            out.push(message);
+        }
+        out
+    }
+
+    fn text_event(ts: &str, text: &str, attachments: Option<Vec<Attachment>>) -> Event {
+        serde_json::from_value(json!({
+            "type": "message",
+            "channel": "C123",
+            "user": "U123",
+            "text": text,
+            "ts": ts,
+            "attachments": attachments
+        }))
+        .unwrap()
+    }
+
+    fn message_changed_event(
+        ts: &str,
+        text: &str,
+        attachments: Option<Vec<Attachment>>,
+        edited: Option<Value>,
+    ) -> Event {
+        serde_json::from_value(json!({
+            "type": "message",
+            "subtype": "message_changed",
+            "channel": "C123",
+            "hidden": true,
+            "message": {
+                "type": "message",
+                "channel": "C123",
+                "user": "U123",
+                "text": text,
+                "ts": ts,
+                "attachments": attachments,
+                "edited": edited
+            },
+            "previous_message": {
+                "type": "message",
+                "channel": "C123",
+                "user": "U123",
+                "text": text,
+                "ts": ts
+            },
+            "ts": ts
+        }))
+        .unwrap()
+    }
+
+    fn irc_projection_text_and_preview_counts(messages: &[Message]) -> (usize, usize) {
+        let mut text_count = 0;
+        let mut preview_count = 0;
+
+        for message in messages {
+            if let Message::Text {
+                message,
+                attachments,
+                is_edit,
+                irc_flag,
+                ..
+            } = message
+            {
+                let effective_text = if *irc_flag && *is_edit {
+                    None
+                } else {
+                    message.as_ref()
+                };
+                if effective_text.is_some() {
+                    text_count += 1;
+                }
+
+                if let Some(attachments) = attachments {
+                    preview_count += attachments
+                        .iter()
+                        .filter(|attachment| attachment.text.is_some())
+                        .count();
+                }
+            }
+        }
+
+        (text_count, preview_count)
+    }
+
+    #[tokio::test]
+    async fn unfurl_after_original_emits_no_duplicate_irc_text() {
+        let (mut slack, mut rx) = setup_slack_test_harness().await;
+        let preview = Attachment {
+            text: Some("Preview content".to_string()),
+            is_msg_unfurl: Some(true),
+            ..Default::default()
+        };
+
+        slack
+            .handle_event(
+                text_event("1700000000.000001", "Original text", None),
+                false,
+            )
+            .await
+            .unwrap();
+        slack
+            .handle_event(
+                message_changed_event(
+                    "1700000000.000001",
+                    "Original text",
+                    Some(vec![preview]),
+                    None,
+                ),
+                false,
+            )
+            .await
+            .unwrap();
+
+        let messages = drain_messages(&mut rx);
+        assert_eq!(messages.len(), 2);
+
+        let (text_count, preview_count) = irc_projection_text_and_preview_counts(&messages);
+        assert_eq!(text_count, 1);
+        assert_eq!(preview_count, 1);
+
+        assert!(matches!(
+            &messages[0],
+            Message::Text { is_edit: false, irc_flag: true, message, attachments: None, .. }
+                if message.as_deref() == Some("Original text")
+        ));
+        assert!(matches!(
+            &messages[1],
+            Message::Text { is_edit: true, irc_flag: true, message, attachments: Some(_), .. }
+                if message.as_deref() == Some("Original text")
+        ));
+    }
+
+    #[tokio::test]
+    async fn unfurl_before_original_still_yields_single_irc_text_and_preview() {
+        let (mut slack, mut rx) = setup_slack_test_harness().await;
+        let preview = Attachment {
+            text: Some("Preview content".to_string()),
+            is_msg_unfurl: Some(true),
+            ..Default::default()
+        };
+
+        slack
+            .handle_event(
+                message_changed_event(
+                    "1700000000.000002",
+                    "Original text",
+                    Some(vec![preview]),
+                    None,
+                ),
+                false,
+            )
+            .await
+            .unwrap();
+        slack
+            .handle_event(
+                text_event("1700000000.000002", "Original text", None),
+                false,
+            )
+            .await
+            .unwrap();
+
+        let messages = drain_messages(&mut rx);
+        assert_eq!(messages.len(), 2);
+
+        let (text_count, preview_count) = irc_projection_text_and_preview_counts(&messages);
+        assert_eq!(text_count, 1);
+        assert_eq!(preview_count, 1);
+    }
+
+    #[tokio::test]
+    async fn unfurl_only_emits_preview_without_duplicate_irc_text() {
+        let (mut slack, mut rx) = setup_slack_test_harness().await;
+        let preview = Attachment {
+            text: Some("Preview content".to_string()),
+            is_msg_unfurl: Some(true),
+            ..Default::default()
+        };
+
+        slack
+            .handle_event(
+                message_changed_event(
+                    "1700000000.000003",
+                    "Original text",
+                    Some(vec![preview]),
+                    None,
+                ),
+                false,
+            )
+            .await
+            .unwrap();
+
+        let messages = drain_messages(&mut rx);
+        assert_eq!(messages.len(), 1);
+        let (text_count, preview_count) = irc_projection_text_and_preview_counts(&messages);
+        assert_eq!(text_count, 0);
+        assert_eq!(preview_count, 1);
+
+        assert!(matches!(
+            &messages[0],
+            Message::Text {
+                is_edit: true,
+                irc_flag: true,
+                attachments: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn genuine_edit_after_original_keeps_edited_text_for_irc() {
+        let (mut slack, mut rx) = setup_slack_test_harness().await;
+
+        slack
+            .handle_event(
+                text_event("1700000000.000004", "Original text", None),
+                false,
+            )
+            .await
+            .unwrap();
+        slack
+            .handle_event(
+                message_changed_event(
+                    "1700000000.000004",
+                    "Edited text",
+                    None,
+                    Some(json!({"user": "U123", "ts": "1700000001.000001"})),
+                ),
+                false,
+            )
+            .await
+            .unwrap();
+
+        let messages = drain_messages(&mut rx);
+        assert_eq!(messages.len(), 2);
+
+        let (text_count, preview_count) = irc_projection_text_and_preview_counts(&messages);
+        assert_eq!(text_count, 2);
+        assert_eq!(preview_count, 0);
+
+        assert!(matches!(
+            &messages[1],
+            Message::Text { is_edit: true, irc_flag: false, message, .. }
+                if message.as_deref() == Some("Edited text")
+        ));
     }
 }
