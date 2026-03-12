@@ -1906,8 +1906,8 @@ impl Slack {
         user: Option<String>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
-        is_edit: bool,
-        irc_flag: bool,
+        mut is_edit: bool,
+        mut irc_flag: bool,
     ) -> anyhow::Result<()> {
         let has_message = message.is_some();
         let has_attachments = attachments.is_some();
@@ -1915,12 +1915,16 @@ impl Slack {
             Some(ts) => Some((Some(ts.clone()), None)),
             None => None,
         };
-        let pipo_id = match ts {
-            Some(ts) => match self.select_id_from_messages(&ts).await {
-                Some(id) => id,
-                None => self.insert_into_messages_table(&ts).await?,
-            },
-            None => return Err(anyhow!("Message has no timestamp.")),
+        let ts = ts.ok_or_else(|| anyhow!("Message has no timestamp."))?;
+        let pipo_id = match self.select_id_from_messages(&ts).await {
+            Some(id) => id,
+            None => {
+                if is_edit {
+                    is_edit = false;
+                    irc_flag = false;
+                }
+                self.insert_into_messages_table(&ts).await?
+            }
         };
         let user = self
             .get_user_info(&user.ok_or_else(|| anyhow!("No user ID in message."))?)
