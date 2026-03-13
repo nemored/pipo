@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -44,6 +44,7 @@ pub(crate) struct Slack {
     channel_map: HashMap<String, String>,
     id_map: HashMap<String, String>,
     users: HashMap<String, User>,
+    seen_event_ids: VecDeque<String>,
 }
 
 struct WebSocket {
@@ -92,6 +93,7 @@ impl Slack {
             channel_map: HashMap::new(),
             id_map: HashMap::new(),
             users: HashMap::new(),
+            seen_event_ids: VecDeque::with_capacity(50),
         })
     }
 
@@ -1218,11 +1220,31 @@ impl Slack {
             Response::EventsApi {
                 envelope_id,
                 accepts_response_payload: _,
-                retry_attempt: _,
+                retry_attempt,
                 retry_reason: _,
                 payload,
             } => {
                 self.acknowledge(&envelope_id).await?;
+
+                if retry_attempt > 0 {
+                    let event_id = match &payload {
+                        EventPayload::EventCallback { event_id, .. } => Some(event_id.clone()),
+                        EventPayload::UrlVerification { .. } => None,
+                    };
+
+                    if let Some(event_id) = event_id {
+                        if self.seen_event_ids.contains(&event_id) {
+                            return Ok(());
+                        }
+
+                        if self.seen_event_ids.len() == 50 {
+                            self.seen_event_ids.pop_front();
+                        }
+
+                        self.seen_event_ids.push_back(event_id);
+                    }
+                }
+
                 self.handle_event_payload(payload).await
             }
             Response::Hello {
