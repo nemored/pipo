@@ -1,0 +1,5 @@
+{"type":"health","timestamp":"2026-01-15T08:30:04.000Z","status":"ok"}
+{"type":"warn","timestamp":"2026-01-15T08:30:05.000Z","code":"deprecated_field","message":"field x is deprecated"}
+{"type":"fatal","timestamp":"2026-01-15T08:30:06.000Z","code":"startup_failed","message":"unable to bind socket"}
+{"type":"shutdown","timestamp":"2026-01-15T08:30:07.000Z","reason":"signal"}
+{"type":"health_check","timestamp":"2026-01-15T08:30:08.000Z","probe_id":"hc-001"}
