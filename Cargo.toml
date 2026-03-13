@@ -18,7 +18,7 @@ emojis = "0.6"
 futures = "0.3"
 hmac = "0.12"
 html-escape = "0.2"
-irc = "1.0"
+irc = "1.1"
 lazy_static = "1.5"
 nix = "0.29"
 #parser = { path = "./parser" }
