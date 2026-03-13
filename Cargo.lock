@@ -780,9 +780,9 @@ checksum = "68f2d64f2edebec4ce84ad108148e67e1064789bee435edc5b60ad398714a3a9"
 
 [[package]]
 name = "irc"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b59a23035df48e37386a6d03dc084fbab6ab835134bb99d081954199d7dd20df"
+checksum = "f1be91867682072063576cac1279b7838f1cdfa87a346de8f8b1dc93cfb337b8"
 dependencies = [
  "chrono",
  "encoding",
@@ -793,7 +793,6 @@ dependencies = [
  "parking_lot",
  "pin-project",
  "serde",
- "serde_derive",
  "thiserror",
  "tokio",
  "tokio-native-tls",
@@ -804,9 +803,9 @@ dependencies = [
 
 [[package]]
 name = "irc-proto"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b5c7fb0c03989e8b31de1c91d0f625057887677e387448e7fc10a6afd4d9e1"
+checksum = "259640031f2f3e6d9fa632c7b314ba1eb5d1f88b3583bd2dd2e8f17155a19b5b"
 dependencies = [
  "bytes",
  "encoding",
