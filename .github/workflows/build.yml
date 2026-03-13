@@ -6,8 +6,9 @@ on:
       - "*"
   pull_request:
     branches:
-      - main
-      - feature/matrix
+      - 'main'
+      - 'feature/matrix'
+      - 'feature/elixir-supervisor'
 
 jobs:
   rust-transport-runtime:

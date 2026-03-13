@@ -22,7 +22,7 @@ irc = "1.1"
 lazy_static = "1.5"
 nix = "0.29"
 #parser = { path = "./parser" }
-protobuf = "2"
+protobuf = ">=3.7.2"
 regex = "1.11"
 reqwest = "0.11"
 rusqlite = "0.28"
@@ -38,4 +38,5 @@ tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 webpki-roots = "0.26"
 
 [build-dependencies]
-protoc-rust = "2"
+protobuf-codegen = "3.7.2"
+protoc-bin-vendored = "3"
