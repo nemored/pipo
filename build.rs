@@ -1,10 +1,14 @@
-use protoc_rust;
-
 fn main() {
-    protoc_rust::Codegen::new()
+    let protoc = protoc_bin_vendored::protoc_bin_path().expect("failed to fetch vendored protoc");
+
+    std::fs::create_dir_all("src/protos").expect("failed to create src/protos output directory");
+
+    protobuf_codegen::Codegen::new()
+        .protoc()
+        .protoc_path(&protoc)
+        .customize(protobuf_codegen::Customize::default().gen_mod_rs(false))
         .out_dir("src/protos")
-        .inputs(&["protos/Mumble.proto"])
         .include("protos")
-        .run()
-        .expect("Running protoc failed.");
+        .input("protos/Mumble.proto")
+        .run_from_script();
 }

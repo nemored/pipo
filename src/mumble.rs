@@ -282,7 +282,7 @@ impl Mumble {
         message.set_os(String::from("PIPO"));
         message.set_os_version(String::from("PIPO"));
         let mut version = vec![0, 0];
-        version.extend_from_slice(&message.compute_size().to_be_bytes());
+        version.extend_from_slice(&(message.compute_size() as u32).to_be_bytes());
         message.write_to_vec(&mut version)?;
         let mut message = mumble::Authenticate::new();
         message.set_username(self.nickname.as_ref().clone());
@@ -290,7 +290,7 @@ impl Mumble {
             message.set_password(password.clone());
         }
         let mut authenticate = vec![0, 2];
-        authenticate.extend_from_slice(&message.compute_size().to_be_bytes());
+        authenticate.extend_from_slice(&(message.compute_size() as u32).to_be_bytes());
         message.write_to_vec(&mut authenticate)?;
         let mut bytes_sent = 0;
         while bytes_sent < version.len() {
@@ -313,7 +313,7 @@ impl Mumble {
         match read_be_u16(&buffer[..2]) {
             0 => {
                 let message = mumble::Version::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             1 => {
                 // UDPTunnel: Ignored
@@ -322,124 +322,124 @@ impl Mumble {
             2 => {
                 let message =
                     mumble::Authenticate::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             3 => {
                 let message = mumble::Ping::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             4 => {
                 let message = mumble::Reject::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
                 return Err(anyhow!("Server rejected the connection."));
             }
             5 => {
                 let message =
                     mumble::ServerSync::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
                 self.handle_server_sync_message(message).await;
             }
             6 => {
                 let message =
                     mumble::ChannelRemove::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
                 self.handle_channel_remove_message(message).await;
             }
             7 => {
                 let message =
                     mumble::ChannelState::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
                 self.handle_channel_state_message(message).await;
             }
             8 => {
                 let message =
                     mumble::UserRemove::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
                 self.handle_user_remove_message(message).await;
             }
             9 => {
                 let message =
                     mumble::UserState::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
                 self.handle_user_state_message(message).await;
             }
             10 => {
                 let message = mumble::BanList::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             11 => {
                 let message =
                     mumble::TextMessage::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
                 self.handle_text_message_message(message).await;
             }
             12 => {
                 let message =
                     mumble::PermissionDenied::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             13 => {
                 let message = mumble::ACL::parse_from_bytes(&buffer[OFFSET..length + OFFSET])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             14 => {
                 let message =
                     mumble::QueryUsers::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             15 => {
                 let message =
                     mumble::CryptSetup::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             16 => {
                 let message =
                     mumble::ContextActionModify::parse_from_bytes(&buffer[6..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             17 => {
                 let message =
                     mumble::ContextAction::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             18 => {
                 let message = mumble::UserList::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             19 => {
                 let message =
                     mumble::VoiceTarget::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             20 => {
                 let message =
                     mumble::PermissionQuery::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             21 => {
                 let message =
                     mumble::CodecVersion::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             22 => {
                 let message =
                     mumble::UserStats::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             23 => {
                 let message =
                     mumble::RequestBlob::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             24 => {
                 let message =
                     mumble::ServerConfig::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             25 => {
                 let message =
                     mumble::SuggestConfig::parse_from_bytes(&buffer[OFFSET..OFFSET + length])?;
-                print_protobuf_message(&message as &dyn ProtobufMessage);
+                print_protobuf_message(&message);
             }
             _ => unimplemented!(),
         }
@@ -456,12 +456,7 @@ impl Mumble {
         user.set_actor(actor_id);
         user.set_self_mute(true);
         user.set_self_deaf(true);
-        user.set_listening_channel_add(
-            self.channel_ids
-                .keys()
-                .map(|id| id.clone())
-                .collect::<Vec<u32>>(),
-        );
+        user.listening_channel_add = self.channel_ids.keys().copied().collect::<Vec<u32>>();
 
         let packet = match build_packet(Payload::UserState as u16, &user) {
             Ok(p) => p,
@@ -486,8 +481,8 @@ impl Mumble {
     }
 
     async fn handle_channel_state_message(&mut self, mut message: mumble::ChannelState) {
-        let name = message.get_name().to_string();
-        let channel_id = message.get_channel_id();
+        let name = message.name().to_string();
+        let channel_id = message.channel_id();
 
         if let Some(mut channel) = self.channels.get_mut(&name) {
             if let Some(channel) = self.channel_ids.get(&channel_id) {
@@ -502,8 +497,8 @@ impl Mumble {
     }
 
     async fn handle_channel_remove_message(&mut self, message: mumble::ChannelRemove) {
-        if let Some(channel) = self.channel_ids.remove(&message.get_channel_id()) {
-            if let Some(mut channel) = self.channels.get_mut(&channel.get_name().to_string()) {
+        if let Some(channel) = self.channel_ids.remove(&message.channel_id()) {
+            if let Some(mut channel) = self.channels.get_mut(&channel.name().to_string()) {
                 channel.0 = None;
             }
         }
@@ -511,7 +506,7 @@ impl Mumble {
 
     async fn handle_user_state_message(&mut self, mut message: mumble::UserState) {
         // Use the session ID as the actor index because ???
-        let session = message.get_session();
+        let session = message.session();
 
         if let Some(user) = self.users.get(&session) {
             (|| message.merge_from_bytes(&user.write_to_bytes()?))().unwrap();
@@ -519,7 +514,7 @@ impl Mumble {
 
         self.users.insert(session, message);
         if let Some(user) = self.users.get(&session) {
-            if user.get_name() == self.nickname.as_ref() {
+            if user.name() == self.nickname.as_ref() {
                 self.actor_id = Some(session);
             }
         }
@@ -527,7 +522,7 @@ impl Mumble {
 
     async fn handle_user_remove_message(&mut self, message: mumble::UserRemove) {
         // Use the session ID as the actor index because ???
-        let session = message.get_session();
+        let session = message.session();
 
         self.users.remove(&session);
     }
@@ -536,18 +531,15 @@ impl Mumble {
         &mut self,
         message: mumble::TextMessage,
     ) -> anyhow::Result<()> {
-        for channel_id in message.get_channel_id().iter() {
+        for channel_id in message.channel_id.iter() {
             if let Some(channel) = self.channel_ids.get(&channel_id) {
-                if let Some(bus) = self.channels.get(&channel.get_name().to_string()) {
+                if let Some(bus) = self.channels.get(&channel.name().to_string()) {
                     let pipo_id = self.insert_into_messages_table().await?;
                     let username = self
                         .users
-                        .get(&message.get_actor())
-                        .ok_or(anyhow!(
-                            "No user found for actor ID {}",
-                            message.get_actor()
-                        ))?
-                        .get_name()
+                        .get(&message.actor())
+                        .ok_or(anyhow!("No user found for actor ID {}", message.actor()))?
+                        .name()
                         .to_string();
 
                     let message = Message::Text {
@@ -558,7 +550,7 @@ impl Mumble {
                         avatar_url: None,
                         thread: None,
                         message: Some(
-                            html_escape::decode_html_entities(message.get_message()).to_string(),
+                            html_escape::decode_html_entities(message.message()).to_string(),
                         ),
                         attachments: None,
                         is_edit: false,
@@ -687,7 +679,7 @@ impl Mumble {
         if let Some(channel_id) = (|| self.channels.get(&channel.to_string())?.0.as_ref())() {
             let mut message = mumble::TextMessage::new();
             message.set_actor(actor_id);
-            message.set_channel_id(Vec::from([channel_id.get_channel_id()]));
+            message.channel_id = Vec::from([channel_id.channel_id()]);
             message.set_message(message_text);
             let packet = build_packet(Payload::TextMessage as u16, &message)?;
             let mut bytes_sent = 0;
@@ -724,7 +716,7 @@ impl Mumble {
         if let Some(channel_id) = (|| self.channels.get(&channel.to_string())?.0.as_ref())() {
             let mut message = mumble::TextMessage::new();
             message.set_actor(actor_id);
-            message.set_channel_id(Vec::from([channel_id.get_channel_id()]));
+            message.channel_id = Vec::from([channel_id.channel_id()]);
             message.set_message(message_text);
             let packet = build_packet(Payload::TextMessage as u16, &message)?;
             let mut bytes_sent = 0;
@@ -779,17 +771,17 @@ fn read_be_u32(input: &[u8]) -> u32 {
     u32::from_be_bytes(int_bytes.try_into().unwrap())
 }
 
-fn print_protobuf_message(message: &dyn ProtobufMessage) {
+fn print_protobuf_message<M: ProtobufMessage + std::fmt::Debug>(message: &M) {
     if cfg!(debug_assertions) {
-        println!("{}: {:?}", message.descriptor().name(), message);
+        println!("{}: {:?}", M::NAME, message);
     }
 }
 
-fn build_packet(typ: u16, message: &dyn ProtobufMessage) -> anyhow::Result<Vec<u8>> {
+fn build_packet<M: ProtobufMessage>(typ: u16, message: &M) -> anyhow::Result<Vec<u8>> {
     let mut packet = Vec::new();
 
     packet.extend_from_slice(&typ.to_be_bytes());
-    packet.extend_from_slice(&message.compute_size().to_be_bytes());
+    packet.extend_from_slice(&(message.compute_size() as u32).to_be_bytes());
     message.write_to_vec(&mut packet)?;
 
     Ok(packet)
