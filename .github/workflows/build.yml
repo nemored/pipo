@@ -1,41 +1,124 @@
-name: Build
+name: CI
 
 on:
   push:
     branches:
-      - '*'
+      - "*"
   pull_request:
     branches:
-      - 'main'
-      - 'feature/matrix'
+      - main
+      - feature/matrix
 
 jobs:
-  build:
+  rust-transport-runtime:
+    name: Rust / native-transport-runtime (lint-test-build)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: native/transport_runtime
     steps:
-      - uses: actions/checkout@v3
-      - name: install_deps
-        run: sudo apt install -y protobuf-compiler libsqlite3-dev
-      - name: build
-        run: cargo build --verbose
+      - uses: actions/checkout@v4
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --all-targets --all-features
+      - name: Build
+        run: cargo build --all-targets --all-features --verbose
 
-  release:
+  elixir-pipo-supervisor:
+    name: Elixir / apps-pipo-supervisor (lint-test-build)
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    defaults:
+      run:
+        working-directory: apps/pipo_supervisor
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.0"
+          elixir-version: "1.17.2"
+      - name: Dependencies
+        run: mix deps.get
+      - name: Lint
+        run: mix format --check-formatted
+      - name: Test
+        run: mix test
+      - name: Build
+        run: mix compile --warnings-as-errors
 
-      - name: install_deps
-        run: sudo apt install -y protobuf-compiler libsqlite3-dev
+  integration-protocol-supervision:
+    name: Integration / protocol-supervision
+    runs-on: ubuntu-latest
+    needs:
+      - rust-transport-runtime
+      - elixir-pipo-supervisor
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify integration wiring
+        run: ./scripts/integration_protocol_supervision.sh
 
-      - name: Add x86_64 target
-        run: rustup target add x86_64-unknown-linux-gnu
-
-      - name: Build release artifact (x86_64 Linux)
-        run: cargo build --release --target x86_64-unknown-linux-gnu
-
-      - name: Upload artifact
+  tarball-assembly:
+    name: Packaging / tarball-assembly
+    runs-on: ubuntu-latest
+    needs:
+      - integration-protocol-supervision
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble bootstrap tarball
+        run: |
+          mkdir -p dist
+          tar -czf dist/pipo-bootstrap.tar.gz \
+            apps/pipo_supervisor \
+            native/transport_runtime \
+            schema \
+            packaging \
+            docs
+      - name: Upload tarball artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pipo-x86_64-linux
-          path: target/x86_64-unknown-linux-gnu/release/pipo
+          name: pipo-bootstrap
+          path: dist/pipo-bootstrap.tar.gz
+
+  extract-and-smoke-test:
+    name: Packaging / extract-and-smoke-test
+    runs-on: ubuntu-latest
+    needs:
+      - tarball-assembly
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pipo-bootstrap
+          path: dist
+      - name: Extract and smoke test
+        run: ./packaging/smoke_test.sh dist/pipo-bootstrap.tar.gz dist/smoke
+
+  required-checks:
+    name: Required / all-five-bootstrap-jobs
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - rust-transport-runtime
+      - elixir-pipo-supervisor
+      - integration-protocol-supervision
+      - tarball-assembly
+      - extract-and-smoke-test
+    steps:
+      - name: Enforce required CI jobs
+        run: |
+          echo "Rust job: ${{ needs.rust-transport-runtime.result }}"
+          echo "Elixir job: ${{ needs.elixir-pipo-supervisor.result }}"
+          echo "Integration job: ${{ needs.integration-protocol-supervision.result }}"
+          echo "Tarball job: ${{ needs.tarball-assembly.result }}"
+          echo "Smoke job: ${{ needs.extract-and-smoke-test.result }}"
+          test "${{ needs.rust-transport-runtime.result }}" = "success"
+          test "${{ needs.elixir-pipo-supervisor.result }}" = "success"
+          test "${{ needs.integration-protocol-supervision.result }}" = "success"
+          test "${{ needs.tarball-assembly.result }}" = "success"
+          test "${{ needs.extract-and-smoke-test.result }}" = "success"
