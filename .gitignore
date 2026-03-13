@@ -7,3 +7,6 @@
 .DS_Store
 .vagrant/
 .dev.env
+apps/pipo_supervisor/_build/
+apps/pipo_supervisor/deps/
+native/transport_runtime/target/
