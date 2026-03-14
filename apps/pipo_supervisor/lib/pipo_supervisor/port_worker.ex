@@ -1,0 +1,204 @@
+defmodule PipoSupervisor.PortWorker do
+  @moduledoc """
+  Bridges an external `pipo-transport` process and the Router.
+  """
+
+  use GenServer
+  require Logger
+
+  @default_ready_timeout_ms 5_000
+  @default_shutdown_timeout_ms 1_000
+  @default_backoff_ms 100
+  @default_jitter_ms 50
+
+  defstruct id: nil,
+            router: PipoSupervisor.Router,
+            transport_path: nil,
+            port: nil,
+            status: :starting,
+            ready_timeout_ms: @default_ready_timeout_ms,
+            shutdown_timeout_ms: @default_shutdown_timeout_ms,
+            ready_timer: nil,
+            backoff_ms: @default_backoff_ms,
+            jitter_ms: @default_jitter_ms
+
+  def start_link(opts) do
+    id = Keyword.fetch!(opts, :id)
+    name = Keyword.get(opts, :name, via_name(id))
+    GenServer.start_link(__MODULE__, opts, name: name)
+  end
+
+  def via_name(id), do: {:global, {__MODULE__, id}}
+
+  @impl true
+  def init(opts) do
+    config = Application.get_env(:pipo_supervisor, :port_worker, [])
+    merged = Keyword.merge(config, opts)
+
+    state = %__MODULE__{
+      id: Keyword.fetch!(merged, :id),
+      router: Keyword.get(merged, :router, PipoSupervisor.Router),
+      transport_path: resolve_transport_path(Keyword.get(merged, :transport_path)),
+      ready_timeout_ms: Keyword.get(merged, :ready_timeout_ms, @default_ready_timeout_ms),
+      shutdown_timeout_ms:
+        Keyword.get(merged, :shutdown_timeout_ms, @default_shutdown_timeout_ms),
+      backoff_ms: Keyword.get(merged, :backoff_ms, @default_backoff_ms),
+      jitter_ms: Keyword.get(merged, :jitter_ms, @default_jitter_ms)
+    }
+
+    backoff = state.backoff_ms + :rand.uniform(max(state.jitter_ms, 1)) - 1
+    Process.send_after(self(), :boot_transport, backoff)
+
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_info(:boot_transport, state) do
+    case launch_port(state.transport_path) do
+      {:ok, port} ->
+        ready_timer = Process.send_after(self(), :ready_timeout, state.ready_timeout_ms)
+        maybe_register_worker(state.router, state.id)
+        {:noreply, %{state | port: port, ready_timer: ready_timer, status: :starting}}
+
+      {:error, reason} ->
+        Logger.error("worker #{inspect(state.id)} failed to launch transport: #{inspect(reason)}")
+        {:stop, reason, %{state | status: :stopped}}
+    end
+  end
+
+  def handle_info(:ready_timeout, state = %{status: :starting}) do
+    Logger.warning("worker #{inspect(state.id)} did not become ready before timeout")
+    {:noreply, %{state | status: :degraded, ready_timer: nil}}
+  end
+
+  def handle_info({port, {:data, {:eol, line}}}, %{port: port} = state) do
+    next_state = handle_transport_line(String.trim(line), state)
+    {:noreply, next_state}
+  end
+
+  def handle_info({port, {:data, {:noeol, line}}}, %{port: port} = state) do
+    next_state = handle_transport_line(String.trim(line), state)
+    {:noreply, next_state}
+  end
+
+  def handle_info({port, {:exit_status, _status}}, %{port: port} = state) do
+    {:stop, :transport_exited, %{state | status: :stopped, port: nil}}
+  end
+
+  @impl true
+  def handle_call({:deliver, frame}, _from, state) do
+    case state.port do
+      nil ->
+        {:reply, {:error, :no_port}, state}
+
+      port ->
+        payload = PipoSupervisor.NDJSON.encode_frame(frame)
+        Port.command(port, payload <> "\n")
+        {:reply, :ok, state}
+    end
+  end
+
+  def handle_call(:status, _from, state), do: {:reply, state.status, state}
+
+  @impl true
+  def terminate(_reason, state) do
+    graceful_stop_port(state)
+    :ok
+  end
+
+  defp handle_transport_line("", state), do: state
+
+  defp handle_transport_line(line, state) do
+    with {:ok, decoded} <- PipoSupervisor.NDJSON.decode_line(line) do
+      process_frame(decoded, state)
+    else
+      _ ->
+        Logger.warning(
+          "worker #{inspect(state.id)} received invalid NDJSON frame: #{inspect(line)}"
+        )
+
+        state
+    end
+  end
+
+  defp process_frame(%{"event" => "ready"}, state) do
+    if state.ready_timer, do: Process.cancel_timer(state.ready_timer)
+    %{state | status: :ready, ready_timer: nil}
+  end
+
+  defp process_frame(%{"event" => "publish", "bus" => bus, "payload" => payload}, state) do
+    case Process.whereis(state.router) do
+      nil ->
+        Logger.warning("router unavailable; dropping publish from #{inspect(state.id)}")
+        state
+
+      _pid ->
+        PipoSupervisor.Router.publish(state.router, state.id, bus, payload)
+        state
+    end
+  end
+
+  defp process_frame(_frame, state), do: state
+
+  defp maybe_register_worker(router, id) do
+    case GenServer.whereis(router) do
+      nil ->
+        Logger.warning("router unavailable during worker registration for #{inspect(id)}")
+        :ok
+
+      _ ->
+        _ = PipoSupervisor.Router.register_worker(router, id, self())
+        :ok
+    end
+  end
+
+  defp graceful_stop_port(%{port: nil}), do: :ok
+
+  defp graceful_stop_port(state) do
+    shutdown_frame = PipoSupervisor.NDJSON.encode_frame(%{"event" => "shutdown"}) <> "\n"
+    Port.command(state.port, shutdown_frame)
+
+    receive do
+      {port, {:exit_status, _status}} when port == state.port ->
+        :ok
+    after
+      state.shutdown_timeout_ms ->
+        Port.close(state.port)
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp launch_port(nil), do: {:error, :missing_transport_path}
+
+  defp launch_port(path) do
+    if File.exists?(path) do
+      {:ok,
+       Port.open({:spawn_executable, path}, [
+         :binary,
+         {:line, 65_536},
+         :exit_status,
+         :use_stdio,
+         :stderr_to_stdout
+       ])}
+    else
+      {:error, :enoent}
+    end
+  end
+
+  defp resolve_transport_path(nil) do
+    env_path = System.get_env("PIPO_TRANSPORT_PATH")
+
+    release_relative =
+      Application.app_dir(:pipo_supervisor, "../../../native/pipo-transport")
+      |> Path.expand()
+
+    bundled = Application.app_dir(:pipo_supervisor, "priv/pipo-transport")
+
+    [env_path, release_relative, bundled]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.find(&File.exists?/1)
+  end
+
+  defp resolve_transport_path(path), do: path
+end
