@@ -39,4 +39,4 @@ webpki-roots = "0.26"
 
 [build-dependencies]
 protobuf-codegen = "3.7.2"
-protoc-bin-vendored = "3"
+protoc-bin-vendored = "3.2.0"
