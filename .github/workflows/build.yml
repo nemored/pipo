@@ -20,6 +20,9 @@ jobs:
       - name: build
         run: cargo build --locked --verbose
 
+      - name: test
+        run: cargo test --locked --verbose
+
       - name: verify protobuf clean regeneration
         run: |
           # This runs against the checked-out commit for the PR.
