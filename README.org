@@ -31,4 +31,5 @@ cargo run
 - Two clean builds in fresh environments produce identical build behavior.
 - CI fails if protobuf generator drift introduces unexpected repository changes.
 - CI clean-regeneration drift checks run on the checked-out commit and only fail when build steps mutate tracked files unexpectedly (not because the PR contains committed changes).
+- CI uses lockfile-locked cargo invocations (e.g. =cargo build --locked=) to avoid dependency-resolution drift between environments.
 - CI is expected to pass with protobuf runtime =\>= 3.7.2=.
