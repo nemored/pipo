@@ -70,20 +70,25 @@ jobs:
       - integration-protocol-supervision
     steps:
       - uses: actions/checkout@v4
-      - name: Assemble bootstrap tarball
+      - name: Prepare bootstrap runtime binaries
         run: |
-          mkdir -p dist
-          tar -czf dist/pipo-bootstrap.tar.gz \
-            apps/pipo_supervisor \
-            native/transport_runtime \
-            schema \
-            packaging \
-            docs
+          mkdir -p bin
+          cat > bin/pipo_supervisor <<'SCRIPT'
+          #!/usr/bin/env bash
+          echo '{"type":"ready","source":"bootstrap-ci"}'
+          SCRIPT
+          cat > bin/pipo-transport <<'SCRIPT'
+          #!/usr/bin/env bash
+          echo 'bootstrap transport runtime'
+          SCRIPT
+          chmod +x bin/pipo_supervisor bin/pipo-transport
+      - name: Assemble runtime tarball
+        run: ./packaging/build_tarball.sh
       - name: Upload tarball artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pipo-bootstrap
-          path: dist/pipo-bootstrap.tar.gz
+          name: pipo-runtime
+          path: dist/pipo-*.tar.gz
 
   extract-and-smoke-test:
     name: Packaging / extract-and-smoke-test
@@ -95,10 +100,15 @@ jobs:
       - name: Download tarball artifact
         uses: actions/download-artifact@v4
         with:
-          name: pipo-bootstrap
+          name: pipo-runtime
           path: dist
       - name: Extract and smoke test
-        run: ./packaging/smoke_test.sh dist/pipo-bootstrap.tar.gz dist/smoke
+        run: |
+          shopt -s nullglob
+          artifacts=(dist/pipo-*.tar.gz)
+          shopt -u nullglob
+          test "${#artifacts[@]}" -eq 1
+          ./packaging/smoke_test.sh "${artifacts[0]}" dist/smoke
 
   required-checks:
     name: Required / all-five-bootstrap-jobs

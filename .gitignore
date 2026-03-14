@@ -4,6 +4,8 @@
 .\#*
 *.sqlite3
 *.json
+!etc/pipo/config.example.json
+!etc/pipo/transports.example.json
 .DS_Store
 .vagrant/
 .dev.env

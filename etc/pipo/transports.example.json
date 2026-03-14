@@ -1,0 +1,9 @@
+{
+  "transports": [
+    {
+      "name": "slack",
+      "enabled": false,
+      "config_path": "./transport.slack.json"
+    }
+  ]
+}
