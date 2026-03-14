@@ -1,1 +1,0 @@
-{"type":"inject_message","timestamp":"2026-01-15T08:30:03.000Z","pipo_id":"pipo-123","origin_transport":"stdin","bus":"events","payload":{"kind":"command","value":"refresh"}}

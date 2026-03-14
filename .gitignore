@@ -9,6 +9,3 @@
 .dev.env
 
 src/protos/
-apps/pipo_supervisor/_build/
-apps/pipo_supervisor/deps/
-native/transport_runtime/target/
