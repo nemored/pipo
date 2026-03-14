@@ -17,8 +17,11 @@ jobs:
       - uses: actions/checkout@v3
       - name: install_deps
         run: sudo apt install -y protobuf-compiler libsqlite3-dev
-      - name: build
-        run: cargo build --verbose
+      - name: check
+        run: cargo check --verbose
+
+      - name: test
+        run: cargo test --verbose
 
   release:
     runs-on: ubuntu-latest
