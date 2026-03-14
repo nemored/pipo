@@ -81,7 +81,7 @@ else
   "$extract_root/bin/pipo_supervisor" --config "$runtime_config" >"$log_file" 2>&1
 fi
 
-if ! rg -q '"type"\s*:\s*"ready"|\bready\b' "$log_file"; then
+if ! grep -Eqi '"type"[[:space:]]*:[[:space:]]*"ready"|(^|[^[:alnum:]_])ready([^[:alnum:]_]|$)' "$log_file"; then
   echo "smoke test failed: no ready signal observed" >&2
   cat "$log_file" >&2
   exit 1
