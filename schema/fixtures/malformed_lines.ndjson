@@ -1,4 +1,0 @@
-{"type":"ready","timestamp":"2026-01-15T08:30:00.000Z","version":"1.0.0"
-not-json-at-all
-{"type":"message","timestamp":"2026-01-15T08:30:01Z","bus":"events","payload":{}}
-{"type":"inject_message","timestamp":"2026-01-15T08:30:03.000Z","origin_transport":"stdin","bus":"events","payload":{}}

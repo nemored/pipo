@@ -1,2 +1,0 @@
-{"type":"message","timestamp":"2026-01-15T08:30:01.000Z","bus":"events","pipo_id":null,"payload":{"kind":"status","value":"ok"}}
-{"type":"message","timestamp":"2026-01-15T08:30:02.000Z","bus":"events","payload":{"kind":"status","value":"ok"}}
