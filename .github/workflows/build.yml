@@ -17,11 +17,34 @@ jobs:
       - uses: actions/checkout@v3
       - name: install_deps
         run: sudo apt install -y protobuf-compiler libsqlite3-dev
-      - name: check
-        run: cargo check --verbose
+      - name: build
+        run: cargo build --locked --verbose
 
       - name: test
-        run: cargo test --verbose
+        run: cargo test --locked --verbose
+
+      - name: verify protobuf clean regeneration
+        run: |
+          # This runs against the checked-out commit for the PR.
+          # It only fails if the build mutates tracked files unexpectedly.
+          cargo clean
+          cargo build --locked --verbose
+          git update-index -q --refresh
+          git diff --exit-code -- .
+
+      - name: verify protobuf major/runtime sanity
+        run: |
+          versions=$(cargo tree --locked -e normal | rg -o "protobuf v[0-9]+\.[0-9]+\.[0-9]+" | sed 's/^protobuf v//' | cut -d. -f1 | sort -u)
+          if echo "$versions" | rg -q '^2$' && echo "$versions" | rg -q '^3$'; then
+            echo "Found both protobuf v2 and v3 in dependency tree:" >&2
+            cargo tree --locked -e normal | rg "protobuf v"
+            exit 1
+          fi
+
+          if [ -d src/protos ] && rg -n "Singular(Field|PtrField)|CachedSize|UnknownFields" src/protos; then
+            echo "Detected protobuf v2-era symbols in generated output" >&2
+            exit 1
+          fi
 
   release:
     runs-on: ubuntu-latest
@@ -36,7 +59,7 @@ jobs:
         run: rustup target add x86_64-unknown-linux-gnu
 
       - name: Build release artifact (x86_64 Linux)
-        run: cargo build --release --target x86_64-unknown-linux-gnu
+        run: cargo build --locked --release --target x86_64-unknown-linux-gnu
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
