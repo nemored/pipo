@@ -1,4 +1,7 @@
 fn main() {
+    println!("cargo:rerun-if-changed=protos/Mumble.proto");
+    println!("cargo:rerun-if-changed=build.rs");
+
     let protoc = protoc_bin_vendored::protoc_bin_path().expect("failed to fetch vendored protoc");
 
     std::fs::create_dir_all("src/protos").expect("failed to create src/protos output directory");

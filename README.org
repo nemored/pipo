@@ -20,3 +20,14 @@ cargo run
 
 ** Tasks
 *** TODO Improve translation of Slack formatting to Markdown formatting
+
+** Protobuf generation contract
+- Source proto path: =protos/Mumble.proto=
+- Generated output path: =src/protos=
+- Regeneration command: =cargo build=
+- The generated files under =src/protos= are intentionally ignored by git and are expected to be rebuilt deterministically by =build.rs= using vendored =protoc=.
+
+** Protobuf/CI acceptance criteria
+- Two clean builds in fresh environments produce identical build behavior.
+- CI fails if protobuf generator drift introduces unexpected repository changes.
+- CI is expected to pass with protobuf runtime =\>= 3.7.2=.

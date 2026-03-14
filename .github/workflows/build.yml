@@ -20,6 +20,26 @@ jobs:
       - name: build
         run: cargo build --verbose
 
+      - name: verify protobuf clean regeneration
+        run: |
+          cargo clean
+          cargo build --verbose
+          git diff --exit-code
+
+      - name: verify protobuf major/runtime sanity
+        run: |
+          versions=$(cargo tree -e normal | rg -o "protobuf v[0-9]+\.[0-9]+\.[0-9]+" | sed 's/^protobuf v//' | cut -d. -f1 | sort -u)
+          if echo "$versions" | rg -q '^2$' && echo "$versions" | rg -q '^3$'; then
+            echo "Found both protobuf v2 and v3 in dependency tree:" >&2
+            cargo tree -e normal | rg "protobuf v"
+            exit 1
+          fi
+
+          if [ -d src/protos ] && rg -n "Singular(Field|PtrField)|CachedSize|UnknownFields" src/protos; then
+            echo "Detected protobuf v2-era symbols in generated output" >&2
+            exit 1
+          fi
+
   release:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
