@@ -398,7 +398,7 @@ impl Slack {
 
         self.websocket.endpoint = Some(reqwest::Url::parse(&url).unwrap());
 
-        let (ws, _) = connect_async(self.websocket.endpoint.as_ref().unwrap()).await?;
+        let (ws, _) = connect_async(self.websocket.endpoint.as_ref().unwrap().to_string()).await?;
 
         let (sink, stream) = ws.split();
         self.websocket.ws_sink = Some(sink);
