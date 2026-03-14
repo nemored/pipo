@@ -1,4 +1,5 @@
 [workspace]
+members = ["native/transport_runtime"]
 
 [package]
 name = "pipo"
