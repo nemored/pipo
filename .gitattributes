@@ -1,0 +1,2 @@
+# Reduce lockfile merge conflicts by preferring a union merge, then regenerate with `cargo generate-lockfile`.
+Cargo.lock merge=union
