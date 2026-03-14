@@ -22,9 +22,12 @@ jobs:
 
       - name: verify protobuf clean regeneration
         run: |
+          # This runs against the checked-out commit for the PR.
+          # It only fails if the build mutates tracked files unexpectedly.
           cargo clean
           cargo build --verbose
-          git diff --exit-code
+          git update-index -q --refresh
+          git diff --exit-code -- .
 
       - name: verify protobuf major/runtime sanity
         run: |
