@@ -11,9 +11,14 @@ defmodule PipoSupervisor.PortWorker do
   @default_backoff_ms 100
   @default_jitter_ms 50
 
+  @restart_counter_key {__MODULE__, :restart_counts}
+
   defstruct id: nil,
+            instance_id: nil,
+            restart_count: 0,
             router: PipoSupervisor.Router,
             transport_path: nil,
+            transport: nil,
             port: nil,
             status: :starting,
             ready_timeout_ms: @default_ready_timeout_ms,
@@ -35,10 +40,17 @@ defmodule PipoSupervisor.PortWorker do
     config = Application.get_env(:pipo_supervisor, :port_worker, [])
     merged = Keyword.merge(config, opts)
 
+    id = Keyword.fetch!(merged, :id)
+    restart_count = restart_count_for(id)
+    transport_path = resolve_transport_path(Keyword.get(merged, :transport_path))
+
     state = %__MODULE__{
-      id: Keyword.fetch!(merged, :id),
+      id: id,
+      instance_id: "#{id}-#{restart_count}",
+      restart_count: restart_count,
       router: Keyword.get(merged, :router, PipoSupervisor.Router),
-      transport_path: resolve_transport_path(Keyword.get(merged, :transport_path)),
+      transport_path: transport_path,
+      transport: transport_name(transport_path),
       ready_timeout_ms: Keyword.get(merged, :ready_timeout_ms, @default_ready_timeout_ms),
       shutdown_timeout_ms:
         Keyword.get(merged, :shutdown_timeout_ms, @default_shutdown_timeout_ms),
@@ -47,6 +59,11 @@ defmodule PipoSupervisor.PortWorker do
     }
 
     backoff = state.backoff_ms + :rand.uniform(max(state.jitter_ms, 1)) - 1
+
+    Logger.info(
+      "worker init instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count} backoff_ms=#{backoff} jitter_ms=#{state.jitter_ms}"
+    )
+
     Process.send_after(self(), :boot_transport, backoff)
 
     {:ok, state}
@@ -61,13 +78,19 @@ defmodule PipoSupervisor.PortWorker do
         {:noreply, %{state | port: port, ready_timer: ready_timer, status: :starting}}
 
       {:error, reason} ->
-        Logger.error("worker #{inspect(state.id)} failed to launch transport: #{inspect(reason)}")
+        Logger.error(
+          "worker boot_failed instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count} reason=#{inspect(reason)}"
+        )
+
         {:stop, reason, %{state | status: :stopped}}
     end
   end
 
   def handle_info(:ready_timeout, state = %{status: :starting}) do
-    Logger.warning("worker #{inspect(state.id)} did not become ready before timeout")
+    Logger.warning(
+      "worker degraded instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count} reason=ready_timeout"
+    )
+
     {:noreply, %{state | status: :degraded, ready_timer: nil}}
   end
 
@@ -82,6 +105,10 @@ defmodule PipoSupervisor.PortWorker do
   end
 
   def handle_info({port, {:exit_status, _status}}, %{port: port} = state) do
+    Logger.warning(
+      "worker transport_exit instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count}"
+    )
+
     {:stop, :transport_exited, %{state | status: :stopped, port: nil}}
   end
 
@@ -114,7 +141,7 @@ defmodule PipoSupervisor.PortWorker do
     else
       _ ->
         Logger.warning(
-          "worker #{inspect(state.id)} received invalid NDJSON frame: #{inspect(line)}"
+          "worker invalid_frame instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count} line=#{inspect(line)}"
         )
 
         state
@@ -123,13 +150,21 @@ defmodule PipoSupervisor.PortWorker do
 
   defp process_frame(%{"event" => "ready"}, state) do
     if state.ready_timer, do: Process.cancel_timer(state.ready_timer)
+
+    Logger.info(
+      "worker ready instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count}"
+    )
+
     %{state | status: :ready, ready_timer: nil}
   end
 
   defp process_frame(%{"event" => "publish", "bus" => bus, "payload" => payload}, state) do
     case Process.whereis(state.router) do
       nil ->
-        Logger.warning("router unavailable; dropping publish from #{inspect(state.id)}")
+        Logger.warning(
+          "worker router_unavailable instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count}"
+        )
+
         state
 
       _pid ->
@@ -185,6 +220,16 @@ defmodule PipoSupervisor.PortWorker do
       {:error, :enoent}
     end
   end
+
+  defp restart_count_for(worker_id) do
+    counts = :persistent_term.get(@restart_counter_key, %{})
+    restart_count = Map.get(counts, worker_id, -1) + 1
+    :persistent_term.put(@restart_counter_key, Map.put(counts, worker_id, restart_count))
+    restart_count
+  end
+
+  defp transport_name(nil), do: "unknown"
+  defp transport_name(path), do: Path.basename(path)
 
   defp resolve_transport_path(nil) do
     env_path = System.get_env("PIPO_TRANSPORT_PATH")

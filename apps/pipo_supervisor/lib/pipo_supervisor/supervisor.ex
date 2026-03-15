@@ -4,20 +4,30 @@ defmodule PipoSupervisor.Supervisor do
   use Supervisor
 
   def start_link(opts \\ []) do
-    Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+    name = Keyword.get(opts, :name, __MODULE__)
+    Supervisor.start_link(__MODULE__, opts, name: name)
   end
 
   @impl true
   def init(opts) do
     workers = Keyword.get(opts, :workers, Application.get_env(:pipo_supervisor, :workers, []))
     router_opts = Keyword.get(opts, :router, [])
+    worker_opts = Keyword.get(opts, :port_worker, [])
+    worker_overrides = Keyword.get(opts, :worker_overrides, %{})
 
     children = [
       {PipoSupervisor.Router, router_opts}
       | Enum.map(workers, fn worker_id ->
+          worker_specific_opts = Map.get(worker_overrides, worker_id, [])
+
+          merged_worker_opts =
+            worker_opts
+            |> Keyword.merge(worker_specific_opts)
+            |> Keyword.put(:id, worker_id)
+
           %{
             id: {:port_worker, worker_id},
-            start: {PipoSupervisor.PortWorker, :start_link, [[id: worker_id]]},
+            start: {PipoSupervisor.PortWorker, :start_link, [merged_worker_opts]},
             restart: :permanent,
             shutdown: 2_000,
             type: :worker

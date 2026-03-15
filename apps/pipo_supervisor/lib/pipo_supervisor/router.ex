@@ -137,7 +137,7 @@ defmodule PipoSupervisor.Router do
     try do
       case GenServer.call(pid, {:deliver, frame}, state.call_timeout_ms) do
         :ok ->
-          put_health(state, worker_id, %{degraded?: false, drops: 0})
+          restore_worker(state, worker_id)
 
         _ ->
           increment_drop(state, worker_id, :unexpected_response)
@@ -162,9 +162,26 @@ defmodule PipoSupervisor.Router do
     drops = health.drops + 1
     degraded = %{health | degraded?: true, drops: drops}
 
+    if not health.degraded? do
+      Logger.warning(
+        "router worker_degraded worker_id=#{inspect(worker_id)} drops=#{drops} reason=#{inspect(reason)}"
+      )
+    end
+
     maybe_notify_degraded(state.notify_pid, worker_id, drops, state.drop_threshold, reason)
 
     put_health(state, worker_id, degraded)
+  end
+
+  defp restore_worker(state, worker_id) do
+    health = Map.get(state.worker_health, worker_id, %{degraded?: false, drops: 0})
+
+    if health.degraded? do
+      Logger.info("router worker_restored worker_id=#{inspect(worker_id)} drops=#{health.drops}")
+      maybe_notify_restored(state.notify_pid, worker_id)
+    end
+
+    put_health(state, worker_id, %{degraded?: false, drops: 0})
   end
 
   defp maybe_notify_degraded(nil, _worker_id, _drops, _threshold, _reason), do: :ok
@@ -174,6 +191,12 @@ defmodule PipoSupervisor.Router do
   end
 
   defp maybe_notify_degraded(_pid, _worker_id, _drops, _threshold, _reason), do: :ok
+
+  defp maybe_notify_restored(nil, _worker_id), do: :ok
+
+  defp maybe_notify_restored(pid, worker_id) do
+    send(pid, {:worker_restored, worker_id})
+  end
 
   defp build_routing_tables(channel_mapping) when is_map(channel_mapping) do
     Enum.reduce(channel_mapping, {%{}, %{}}, fn {worker_id, busses},
