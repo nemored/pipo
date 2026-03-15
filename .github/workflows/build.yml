@@ -14,6 +14,29 @@ env:
   SUPPORTED_TARGET_TRIPLES: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-unknown-linux-musl
 
 jobs:
+  resolve-targets:
+    name: Resolve packaging target matrix
+    runs-on: ubuntu-latest
+    outputs:
+      target_matrix: ${{ steps.resolve.outputs.target_matrix }}
+    steps:
+      - name: Resolve targets from SUPPORTED_TARGET_TRIPLES
+        id: resolve
+        env:
+          SUPPORTED_TARGET_TRIPLES: ${{ env.SUPPORTED_TARGET_TRIPLES }}
+        run: |
+          python - <<'PYTHON' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          raw = os.environ["SUPPORTED_TARGET_TRIPLES"]
+          targets = [item.strip() for item in raw.split(",") if item.strip()]
+          if not targets:
+            raise SystemExit("SUPPORTED_TARGET_TRIPLES must include at least one target")
+
+          print(f"target_matrix={json.dumps({'target_triple': targets})}")
+          PYTHON
+
   rust-transport-runtime:
     name: Rust / native-transport-runtime (lint-test-build)
     runs-on: ubuntu-latest
@@ -71,12 +94,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        target_triple:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
+      matrix: ${{ fromJson(needs.resolve-targets.outputs.target_matrix) }}
     needs:
+      - resolve-targets
       - integration-protocol-supervision
     steps:
       - uses: actions/checkout@v4
@@ -114,12 +134,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        target_triple:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
+      matrix: ${{ fromJson(needs.resolve-targets.outputs.target_matrix) }}
     needs:
+      - resolve-targets
       - tarball-assembly
     steps:
       - uses: actions/checkout@v4
@@ -136,24 +153,27 @@ jobs:
           test "${#artifacts[@]}" -eq 1
           ./packaging/smoke_test.sh "${artifacts[0]}" "dist/smoke-${{ matrix.target_triple }}"
 
-  required-checks:
-    name: Required / all-five-bootstrap-jobs
+  publish-gate:
+    name: Publish gate / all ci jobs passed
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - resolve-targets
       - rust-transport-runtime
       - elixir-pipo-supervisor
       - integration-protocol-supervision
       - tarball-assembly
       - extract-and-smoke-test
     steps:
-      - name: Enforce required CI jobs
+      - name: Enforce publish gate
         run: |
+          echo "Resolve targets: ${{ needs.resolve-targets.result }}"
           echo "Rust job: ${{ needs.rust-transport-runtime.result }}"
           echo "Elixir job: ${{ needs.elixir-pipo-supervisor.result }}"
           echo "Integration job: ${{ needs.integration-protocol-supervision.result }}"
           echo "Tarball job: ${{ needs.tarball-assembly.result }}"
           echo "Smoke job: ${{ needs.extract-and-smoke-test.result }}"
+          test "${{ needs.resolve-targets.result }}" = "success"
           test "${{ needs.rust-transport-runtime.result }}" = "success"
           test "${{ needs.elixir-pipo-supervisor.result }}" = "success"
           test "${{ needs.integration-protocol-supervision.result }}" = "success"
