@@ -24,18 +24,7 @@ jobs:
         id: resolve
         env:
           SUPPORTED_TARGET_TRIPLES: ${{ env.SUPPORTED_TARGET_TRIPLES }}
-        run: |
-          python - <<'PYTHON' >> "$GITHUB_OUTPUT"
-          import json
-          import os
-
-          raw = os.environ["SUPPORTED_TARGET_TRIPLES"]
-          targets = [item.strip() for item in raw.split(",") if item.strip()]
-          if not targets:
-            raise SystemExit("SUPPORTED_TARGET_TRIPLES must include at least one target")
-
-          print(f"target_matrix={json.dumps({'target_triple': targets})}")
-          PYTHON
+        run: ./packaging/resolve_compatibility_matrix.py
 
   rust-transport-runtime:
     name: Rust / native-transport-runtime (lint-test-build)
@@ -146,12 +135,59 @@ jobs:
           name: pipo-runtime-${{ matrix.target_triple }}
           path: dist
       - name: Extract and smoke test
+        env:
+          SMOKE_READY_TIMEOUT_SECONDS: ${{ matrix.smoke_ready_timeout_seconds }}
         run: |
           shopt -s nullglob
           artifacts=(dist/pipo-*-${{ matrix.target_triple }}.tar.gz)
           shopt -u nullglob
           test "${#artifacts[@]}" -eq 1
           ./packaging/smoke_test.sh "${artifacts[0]}" "dist/smoke-${{ matrix.target_triple }}"
+
+  resilience-check:
+    name: Packaging / resilience-check (${{ matrix.target_triple }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve-targets.outputs.target_matrix) }}
+    needs:
+      - resolve-targets
+      - tarball-assembly
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pipo-runtime-${{ matrix.target_triple }}
+          path: dist
+      - name: Execute resilience checks
+        run: |
+          shopt -s nullglob
+          artifacts=(dist/pipo-*-${{ matrix.target_triple }}.tar.gz)
+          shopt -u nullglob
+          test "${#artifacts[@]}" -eq 1
+          ./packaging/resilience_test.sh "${artifacts[0]}" "${{ matrix.target_triple }}"
+
+  release-readiness:
+    name: Release readiness / matrix target health
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - resolve-targets
+      - tarball-assembly
+      - extract-and-smoke-test
+      - resilience-check
+    steps:
+      - name: Enforce matrix release readiness
+        run: |
+          echo "Resolve targets: ${{ needs.resolve-targets.result }}"
+          echo "Tarball assembly: ${{ needs.tarball-assembly.result }}"
+          echo "Smoke checks: ${{ needs.extract-and-smoke-test.result }}"
+          echo "Resilience checks: ${{ needs.resilience-check.result }}"
+          test "${{ needs.resolve-targets.result }}" = "success"
+          test "${{ needs.tarball-assembly.result }}" = "success"
+          test "${{ needs.extract-and-smoke-test.result }}" = "success"
+          test "${{ needs.resilience-check.result }}" = "success"
 
   publish-gate:
     name: Publish gate / all ci jobs passed
@@ -162,8 +198,7 @@ jobs:
       - rust-transport-runtime
       - elixir-pipo-supervisor
       - integration-protocol-supervision
-      - tarball-assembly
-      - extract-and-smoke-test
+      - release-readiness
     steps:
       - name: Enforce publish gate
         run: |
@@ -171,11 +206,9 @@ jobs:
           echo "Rust job: ${{ needs.rust-transport-runtime.result }}"
           echo "Elixir job: ${{ needs.elixir-pipo-supervisor.result }}"
           echo "Integration job: ${{ needs.integration-protocol-supervision.result }}"
-          echo "Tarball job: ${{ needs.tarball-assembly.result }}"
-          echo "Smoke job: ${{ needs.extract-and-smoke-test.result }}"
+          echo "Release readiness: ${{ needs.release-readiness.result }}"
           test "${{ needs.resolve-targets.result }}" = "success"
           test "${{ needs.rust-transport-runtime.result }}" = "success"
           test "${{ needs.elixir-pipo-supervisor.result }}" = "success"
           test "${{ needs.integration-protocol-supervision.result }}" = "success"
-          test "${{ needs.tarball-assembly.result }}" = "success"
-          test "${{ needs.extract-and-smoke-test.result }}" = "success"
+          test "${{ needs.release-readiness.result }}" = "success"
