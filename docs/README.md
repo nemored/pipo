@@ -1,3 +1,3 @@
 # Docs
 
-Placeholder documentation root for architecture and release process notes.
+- `burn_in.md`: long-running stability and memory trend validation profile and guardrails.
