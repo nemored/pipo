@@ -1,4 +1,12 @@
 {
-  "protocol_version": "v0-placeholder",
-  "require_all_ready": false
+  "protocol_version": "v1",
+  "shutdown_timeout_ms": 2000,
+  "ready_timeout_ms": 5000,
+  "require_all_ready": false,
+  "restart_intensity_max_restarts": 3,
+  "restart_intensity_window_seconds": 10,
+  "backoff_min_ms": 100,
+  "backoff_max_ms": 1000,
+  "router_delivery_timeout_ms": 200,
+  "router_degraded_drop_threshold": 10
 }

@@ -1,0 +1,7 @@
+{
+  "token": "xapp-***",
+  "bot_token": "xoxb-***",
+  "channel_mapping": {
+    "C012345": "general"
+  }
+}

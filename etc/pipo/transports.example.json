@@ -3,6 +3,8 @@
     {
       "name": "slack",
       "enabled": false,
+      "instance_id": "slack_0",
+      "subscriptions": ["general"],
       "config_path": "./transport.slack.json"
     }
   ]
