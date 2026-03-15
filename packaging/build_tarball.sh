@@ -15,12 +15,24 @@ RUNTIME_README="${RUNTIME_README:-$ROOT_DIR/README-runtime.md}"
 CONFIG_EXAMPLE="${CONFIG_EXAMPLE:-$ROOT_DIR/etc/pipo/config.example.json}"
 TRANSPORTS_EXAMPLE="${TRANSPORTS_EXAMPLE:-$ROOT_DIR/etc/pipo/transports.example.json}"
 
-if [[ ! -f "$PIPO_SUPERVISOR_BIN" ]]; then
-  echo "missing supervisor binary: $PIPO_SUPERVISOR_BIN" >&2
+for required_file in \
+  "$PIPO_SUPERVISOR_BIN" \
+  "$PIPO_TRANSPORT_BIN" \
+  "$RUNTIME_README" \
+  "$CONFIG_EXAMPLE" \
+  "$TRANSPORTS_EXAMPLE"; do
+  if [[ ! -f "$required_file" ]]; then
+    echo "missing required file: $required_file" >&2
+    exit 1
+  fi
+done
+
+if [[ ! "$BUILD_TIMESTAMP" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+  echo "BUILD_TIMESTAMP must be UTC RFC3339 (example: 2026-01-02T03:04:05Z)" >&2
   exit 1
 fi
-if [[ ! -f "$PIPO_TRANSPORT_BIN" ]]; then
-  echo "missing transport binary: $PIPO_TRANSPORT_BIN" >&2
+if ! build_epoch="$(date -u -d "$BUILD_TIMESTAMP" +%s 2>/dev/null)"; then
+  echo "BUILD_TIMESTAMP must be UTC RFC3339 (example: 2026-01-02T03:04:05Z)" >&2
   exit 1
 fi
 
@@ -39,6 +51,9 @@ cp "$CONFIG_EXAMPLE" "$stage_dir/etc/pipo/config.example.json"
 cp "$TRANSPORTS_EXAMPLE" "$stage_dir/etc/pipo/transports.example.json"
 chmod +x "$stage_dir/bin/pipo_supervisor" "$stage_dir/bin/pipo-transport"
 
+# Ensure deterministic file metadata before checksumming and archiving.
+find "$stage_dir" -exec touch -h -d "@$build_epoch" {} +
+
 sup_sha="$(sha256sum "$stage_dir/bin/pipo_supervisor" | awk '{print $1}')"
 transport_sha="$(sha256sum "$stage_dir/bin/pipo-transport" | awk '{print $1}')"
 
@@ -47,8 +62,8 @@ cat > "$stage_dir/releases/manifest.json" <<MANIFEST
   "app_version": "$APP_VERSION",
   "protocol_version": "$PROTOCOL_VERSION",
   "target_triple": "$TARGET_TRIPLE",
-  "build_timestamp": "$BUILD_TIMESTAMP",
   "git_sha": "$GIT_SHA",
+  "build_timestamp": "$BUILD_TIMESTAMP",
   "sha256": {
     "bin/pipo_supervisor": "$sup_sha",
     "bin/pipo-transport": "$transport_sha"
@@ -56,21 +71,32 @@ cat > "$stage_dir/releases/manifest.json" <<MANIFEST
 }
 MANIFEST
 
+touch -d "@$build_epoch" "$stage_dir/releases/manifest.json"
+
 cat > "$stage_dir/releases/SHA256SUMS" <<SUMS
 $sup_sha  bin/pipo_supervisor
 $transport_sha  bin/pipo-transport
 SUMS
 
+touch -d "@$build_epoch" "$stage_dir/releases/SHA256SUMS"
+
 (
   cd "$stage_dir"
-  tar -czf "$artifact_path" \
+  tar \
+    --sort=name \
+    --mtime="@$build_epoch" \
+    --owner=0 \
+    --group=0 \
+    --numeric-owner \
+    --format=gnu \
+    -cf - \
     bin/pipo_supervisor \
     bin/pipo-transport \
     etc/pipo/config.example.json \
     etc/pipo/transports.example.json \
     releases/manifest.json \
     releases/SHA256SUMS \
-    README-runtime.md
+    README-runtime.md | gzip -n > "$artifact_path"
 )
 
 echo "$artifact_path"
