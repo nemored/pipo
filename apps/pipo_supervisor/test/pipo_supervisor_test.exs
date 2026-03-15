@@ -123,6 +123,133 @@ defmodule PipoSupervisor.RouterTest do
     refute_receive {:delivered, ^dynamic_worker, %{"payload" => %{"phase" => "unregistered"}}},
                    150
   end
+
+  test "maintains forward/reverse index integrity across dynamic topology changes" do
+    {:ok, router} =
+      start_supervised(
+        {PipoSupervisor.Router,
+         name: :router_test_4,
+         channel_mapping: %{source: ["alpha"], a: ["alpha"], b: ["beta"]}}
+      )
+
+    {:ok, source_worker} = TestWorker.start_link(self())
+    {:ok, worker_a} = TestWorker.start_link(self())
+    {:ok, worker_b} = TestWorker.start_link(self())
+
+    assert :ok = PipoSupervisor.Router.register_worker(router, :source, source_worker)
+    assert :ok = PipoSupervisor.Router.register_worker(router, :a, worker_a)
+    assert :ok = PipoSupervisor.Router.register_worker(router, :b, worker_b)
+
+    assert_index_integrity(router)
+
+    assert :ok = PipoSupervisor.Router.add_subscription(router, :a, "beta")
+    assert :ok = PipoSupervisor.Router.remove_subscription(router, :a, "alpha")
+
+    assert_index_integrity(router)
+
+    assert :ok = PipoSupervisor.Router.unregister_worker(router, :a)
+
+    assert_index_integrity(router)
+
+    state = :sys.get_state(router)
+    assert state.routing_table["alpha"] == MapSet.new([:source])
+    assert state.routing_table["beta"] == MapSet.new([:b])
+    refute Map.has_key?(state.worker_buses, :a)
+  end
+
+  test "does not duplicate delivery after remove and re-add of subscription" do
+    {:ok, router} =
+      start_supervised(
+        {PipoSupervisor.Router, name: :router_test_5, channel_mapping: %{source: ["alpha"]}}
+      )
+
+    {:ok, source_worker} = TestWorker.start_link(self())
+    {:ok, dynamic_worker} = TestWorker.start_link(self())
+
+    assert :ok = PipoSupervisor.Router.register_worker(router, :source, source_worker)
+    assert :ok = PipoSupervisor.Router.register_worker(router, :dynamic, dynamic_worker)
+
+    assert :ok = PipoSupervisor.Router.add_subscription(router, :dynamic, "alpha")
+    assert :ok = PipoSupervisor.Router.remove_subscription(router, :dynamic, "alpha")
+    assert :ok = PipoSupervisor.Router.add_subscription(router, :dynamic, "alpha")
+
+    PipoSupervisor.Router.publish(router, :source, "alpha", %{"phase" => "readd"})
+
+    assert_receive {:delivered, ^dynamic_worker, %{"payload" => %{"phase" => "readd"}}}, 500
+    refute_receive {:delivered, ^dynamic_worker, %{"payload" => %{"phase" => "readd"}}}, 150
+  end
+
+  test "preserves self-send filtering after subscription topology changes" do
+    {:ok, router} =
+      start_supervised(
+        {PipoSupervisor.Router,
+         name: :router_test_6,
+         channel_mapping: %{source: ["alpha"], observer: ["alpha"]}}
+      )
+
+    {:ok, source_worker} = TestWorker.start_link(self())
+    {:ok, observer_worker} = TestWorker.start_link(self())
+
+    assert :ok = PipoSupervisor.Router.register_worker(router, :source, source_worker)
+    assert :ok = PipoSupervisor.Router.register_worker(router, :observer, observer_worker)
+
+    assert :ok = PipoSupervisor.Router.remove_subscription(router, :source, "alpha")
+    assert :ok = PipoSupervisor.Router.add_subscription(router, :source, "alpha")
+
+    PipoSupervisor.Router.publish(router, :source, "alpha", %{"msg" => "topology-shift"})
+
+    assert_receive {:delivered, ^observer_worker, %{"payload" => %{"msg" => "topology-shift"}}}, 500
+    refute_receive {:delivered, ^source_worker, _}, 150
+  end
+
+  test "degraded handling and thresholds remain local to failing worker" do
+    {:ok, router} =
+      start_supervised(
+        {PipoSupervisor.Router,
+         name: :router_test_7,
+         channel_mapping: %{source: ["alpha"], healthy: ["alpha"], slow: ["alpha"]},
+         call_timeout_ms: 10,
+         drop_threshold: 2,
+         notify_pid: self()}
+      )
+
+    {:ok, source_worker} = TestWorker.start_link(self())
+    {:ok, healthy_worker} = TestWorker.start_link(self())
+    {:ok, slow_worker} = TestWorker.start_link(self(), :sleep)
+
+    assert :ok = PipoSupervisor.Router.register_worker(router, :source, source_worker)
+    assert :ok = PipoSupervisor.Router.register_worker(router, :healthy, healthy_worker)
+    assert :ok = PipoSupervisor.Router.register_worker(router, :slow, slow_worker)
+
+    PipoSupervisor.Router.publish(router, :source, "alpha", %{"seq" => 1})
+    assert_receive {:delivered, ^healthy_worker, %{"payload" => %{"seq" => 1}}}, 500
+    refute_receive {:worker_degraded, :slow, 1, :timeout}, 100
+
+    PipoSupervisor.Router.publish(router, :source, "alpha", %{"seq" => 2})
+    assert_receive {:delivered, ^healthy_worker, %{"payload" => %{"seq" => 2}}}, 500
+    assert_receive {:worker_degraded, :slow, 2, :timeout}, 500
+    refute_receive {:worker_degraded, :healthy, _drops, _reason}, 100
+  end
+
+  defp assert_index_integrity(router) do
+    state = :sys.get_state(router)
+
+    Enum.each(state.routing_table, fn {bus, workers} ->
+      assert map_size(workers) > 0
+
+      Enum.each(workers, fn worker_id ->
+        assert bus in Map.get(state.worker_buses, worker_id, MapSet.new())
+      end)
+    end)
+
+    Enum.each(state.worker_buses, fn {worker_id, buses} ->
+      assert map_size(buses) > 0
+
+      Enum.each(buses, fn bus ->
+        assert worker_id in Map.get(state.routing_table, bus, MapSet.new())
+      end)
+    end)
+  end
 end
 
 defmodule PipoSupervisor.ChaosTest do
