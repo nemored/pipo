@@ -128,8 +128,7 @@ defmodule PipoSupervisor.RouterTest do
     {:ok, router} =
       start_supervised(
         {PipoSupervisor.Router,
-         name: :router_test_4,
-         channel_mapping: %{source: ["alpha"], a: ["alpha"], b: ["beta"]}}
+         name: :router_test_4, channel_mapping: %{source: ["alpha"], a: ["alpha"], b: ["beta"]}}
       )
 
     {:ok, source_worker} = TestWorker.start_link(self())
@@ -183,8 +182,7 @@ defmodule PipoSupervisor.RouterTest do
     {:ok, router} =
       start_supervised(
         {PipoSupervisor.Router,
-         name: :router_test_6,
-         channel_mapping: %{source: ["alpha"], observer: ["alpha"]}}
+         name: :router_test_6, channel_mapping: %{source: ["alpha"], observer: ["alpha"]}}
       )
 
     {:ok, source_worker} = TestWorker.start_link(self())
@@ -198,7 +196,9 @@ defmodule PipoSupervisor.RouterTest do
 
     PipoSupervisor.Router.publish(router, :source, "alpha", %{"msg" => "topology-shift"})
 
-    assert_receive {:delivered, ^observer_worker, %{"payload" => %{"msg" => "topology-shift"}}}, 500
+    assert_receive {:delivered, ^observer_worker, %{"payload" => %{"msg" => "topology-shift"}}},
+                   500
+
     refute_receive {:delivered, ^source_worker, _}, 150
   end
 
