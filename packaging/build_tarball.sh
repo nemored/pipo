@@ -62,7 +62,7 @@ cat > "$stage_dir/releases/manifest.json" <<MANIFEST
   "app_version": "$APP_VERSION",
   "protocol_version": "$PROTOCOL_VERSION",
   "target_triple": "$TARGET_TRIPLE",
-  "git_sha": "$GIT_SHA",
+  "git_commit_sha": "$GIT_SHA",
   "build_timestamp": "$BUILD_TIMESTAMP",
   "sha256": {
     "bin/pipo_supervisor": "$sup_sha",

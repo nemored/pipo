@@ -96,6 +96,13 @@ jobs:
         env:
           TARGET_TRIPLE: ${{ matrix.target_triple }}
         run: ./packaging/build_tarball.sh
+      - name: Validate release manifest and checksums
+        run: |
+          shopt -s nullglob
+          artifacts=(dist/pipo-*-${{ matrix.target_triple }}.tar.gz)
+          shopt -u nullglob
+          test "${#artifacts[@]}" -eq 1
+          ./packaging/validate_release_metadata.sh "${artifacts[0]}"
       - name: Upload tarball artifact
         uses: actions/upload-artifact@v4
         with:
