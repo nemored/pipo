@@ -119,7 +119,7 @@ defmodule PipoSupervisor.PortWorker do
         {:reply, {:error, :no_port}, state}
 
       port ->
-        payload = PipoSupervisor.NDJSON.encode_frame(frame)
+        payload = Jason.encode!(frame)
         Port.command(port, payload <> "\n")
         {:reply, :ok, state}
     end
@@ -136,10 +136,11 @@ defmodule PipoSupervisor.PortWorker do
   defp handle_transport_line("", state), do: state
 
   defp handle_transport_line(line, state) do
-    with {:ok, decoded} <- PipoSupervisor.NDJSON.decode_line(line) do
-      process_frame(decoded, state)
-    else
-      _ ->
+    case Jason.decode(line) do
+      {:ok, decoded} ->
+        process_frame(decoded, state)
+
+      {:error, _reason} ->
         Logger.warning(
           "worker invalid_frame instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count} line=#{inspect(line)}"
         )
@@ -148,7 +149,7 @@ defmodule PipoSupervisor.PortWorker do
     end
   end
 
-  defp process_frame(%{"event" => "ready"}, state) do
+  defp process_frame(%{"type" => "ready"}, state) do
     if state.ready_timer, do: Process.cancel_timer(state.ready_timer)
 
     Logger.info(
@@ -158,7 +159,7 @@ defmodule PipoSupervisor.PortWorker do
     %{state | status: :ready, ready_timer: nil}
   end
 
-  defp process_frame(%{"event" => "publish", "bus" => bus, "payload" => payload}, state) do
+  defp process_frame(%{"type" => "message", "bus" => bus, "payload" => payload}, state) do
     case Process.whereis(state.router) do
       nil ->
         Logger.warning(
@@ -190,7 +191,7 @@ defmodule PipoSupervisor.PortWorker do
   defp graceful_stop_port(%{port: nil}), do: :ok
 
   defp graceful_stop_port(state) do
-    shutdown_frame = PipoSupervisor.NDJSON.encode_frame(%{"event" => "shutdown"}) <> "\n"
+    shutdown_frame = Jason.encode!(%{"event" => "shutdown"}) <> "\n"
     Port.command(state.port, shutdown_frame)
 
     receive do
