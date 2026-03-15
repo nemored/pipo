@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+EXIT_LAYOUT_MISMATCH=10
+EXIT_NON_EXECUTABLE=11
+EXIT_SUPERVISOR_BOOT_FAILURE=12
+EXIT_READY_TIMEOUT=13
+
+fail() {
+  local exit_code="$1"
+  local message="$2"
+  echo "$message" >&2
+  exit "$exit_code"
+}
+
 archive_path="${1:-dist/pipo-bootstrap.tar.gz}"
 extract_root="${2:-}"
 
@@ -18,7 +30,7 @@ if [[ ! -f "$archive_path" ]]; then
       printf '  %s\n' "${candidates[@]}" >&2
       echo "pass the intended archive path explicitly" >&2
     fi
-    exit 1
+    fail "$EXIT_LAYOUT_MISMATCH" "archive not found: $archive_path"
   fi
 fi
 
@@ -50,20 +62,17 @@ required=(
 
 for path in "${required[@]}"; do
   if [[ ! -e "$extract_root/$path" ]]; then
-    echo "missing required artifact member: $path" >&2
-    exit 1
+    fail "$EXIT_LAYOUT_MISMATCH" "missing required artifact member: $path"
   fi
 done
 
 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/validate_release_metadata.sh" "$archive_path"
 
 if [[ ! -x "$extract_root/bin/pipo_supervisor" ]]; then
-  echo "expected executable bit on bin/pipo_supervisor" >&2
-  exit 1
+  fail "$EXIT_NON_EXECUTABLE" "expected executable bit on bin/pipo_supervisor"
 fi
 if [[ ! -x "$extract_root/bin/pipo-transport" ]]; then
-  echo "expected executable bit on bin/pipo-transport" >&2
-  exit 1
+  fail "$EXIT_NON_EXECUTABLE" "expected executable bit on bin/pipo-transport"
 fi
 
 runtime_config="$extract_root/etc/pipo/config.smoke.json"
@@ -74,19 +83,52 @@ cat > "$runtime_config" <<JSON
 JSON
 
 log_file="$extract_root/smoke.log"
+ready_timeout_seconds="${SMOKE_READY_TIMEOUT_SECONDS:-15}"
+if ! [[ "$ready_timeout_seconds" =~ ^[0-9]+$ ]] || [[ "$ready_timeout_seconds" -lt 1 ]]; then
+  fail "$EXIT_READY_TIMEOUT" "invalid SMOKE_READY_TIMEOUT_SECONDS value: $ready_timeout_seconds"
+fi
+
 if [[ -n "${SMOKE_RUN_CMD:-}" ]]; then
   (
     cd "$extract_root"
     eval "$SMOKE_RUN_CMD"
-  ) >"$log_file" 2>&1
+  ) >"$log_file" 2>&1 &
 else
-  "$extract_root/bin/pipo_supervisor" --config "$runtime_config" >"$log_file" 2>&1
+  "$extract_root/bin/pipo_supervisor" --config "$runtime_config" >"$log_file" 2>&1 &
 fi
 
-if ! grep -Eqi '"type"[[:space:]]*:[[:space:]]*"ready"|(^|[^[:alnum:]_])ready([^[:alnum:]_]|$)' "$log_file"; then
-  echo "smoke test failed: no ready signal observed" >&2
-  cat "$log_file" >&2
-  exit 1
+supervisor_pid="$!"
+ready_pattern='"type"[[:space:]]*:[[:space:]]*"ready"|(^|[^[:alnum:]_])ready([^[:alnum:]_]|$)'
+ready_seen=0
+
+for (( second=0; second<ready_timeout_seconds; second++ )); do
+  if [[ -f "$log_file" ]] && grep -Eqi "$ready_pattern" "$log_file"; then
+    ready_seen=1
+    break
+  fi
+
+  if ! kill -0 "$supervisor_pid" 2>/dev/null; then
+    wait "$supervisor_pid" || supervisor_exit_code=$?
+    supervisor_exit_code="${supervisor_exit_code:-0}"
+    fail "$EXIT_SUPERVISOR_BOOT_FAILURE" "smoke test failed: supervisor exited before ready signal (exit $supervisor_exit_code)"
+  fi
+
+  sleep 1
+done
+
+if [[ "$ready_seen" -ne 1 ]]; then
+  if kill -0 "$supervisor_pid" 2>/dev/null; then
+    kill "$supervisor_pid" 2>/dev/null || true
+    wait "$supervisor_pid" 2>/dev/null || true
+  fi
+  echo "smoke test failed: no ready signal observed within ${ready_timeout_seconds}s" >&2
+  [[ -f "$log_file" ]] && cat "$log_file" >&2
+  exit "$EXIT_READY_TIMEOUT"
+fi
+
+if kill -0 "$supervisor_pid" 2>/dev/null; then
+  kill "$supervisor_pid" 2>/dev/null || true
+  wait "$supervisor_pid" 2>/dev/null || true
 fi
 
 echo "Smoke test passed for $archive_path"
