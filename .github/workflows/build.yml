@@ -10,6 +10,9 @@ on:
       - 'feature/matrix'
       - 'feature/elixir-supervisor'
 
+env:
+  SUPPORTED_TARGET_TRIPLES: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-unknown-linux-musl
+
 jobs:
   rust-transport-runtime:
     name: Rust / native-transport-runtime (lint-test-build)
@@ -64,8 +67,15 @@ jobs:
         run: ./scripts/integration_protocol_supervision.sh
 
   tarball-assembly:
-    name: Packaging / tarball-assembly
+    name: Packaging / tarball-assembly (${{ matrix.target_triple }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target_triple:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
     needs:
       - integration-protocol-supervision
     steps:
@@ -83,16 +93,25 @@ jobs:
           SCRIPT
           chmod +x bin/pipo_supervisor bin/pipo-transport
       - name: Assemble runtime tarball
+        env:
+          TARGET_TRIPLE: ${{ matrix.target_triple }}
         run: ./packaging/build_tarball.sh
       - name: Upload tarball artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pipo-runtime
-          path: dist/pipo-*.tar.gz
+          name: pipo-runtime-${{ matrix.target_triple }}
+          path: dist/pipo-*-${{ matrix.target_triple }}.tar.gz
 
   extract-and-smoke-test:
-    name: Packaging / extract-and-smoke-test
+    name: Packaging / extract-and-smoke-test (${{ matrix.target_triple }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target_triple:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
     needs:
       - tarball-assembly
     steps:
@@ -100,15 +119,15 @@ jobs:
       - name: Download tarball artifact
         uses: actions/download-artifact@v4
         with:
-          name: pipo-runtime
+          name: pipo-runtime-${{ matrix.target_triple }}
           path: dist
       - name: Extract and smoke test
         run: |
           shopt -s nullglob
-          artifacts=(dist/pipo-*.tar.gz)
+          artifacts=(dist/pipo-*-${{ matrix.target_triple }}.tar.gz)
           shopt -u nullglob
           test "${#artifacts[@]}" -eq 1
-          ./packaging/smoke_test.sh "${artifacts[0]}" dist/smoke
+          ./packaging/smoke_test.sh "${artifacts[0]}" "dist/smoke-${{ matrix.target_triple }}"
 
   required-checks:
     name: Required / all-five-bootstrap-jobs
