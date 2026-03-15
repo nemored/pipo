@@ -66,6 +66,9 @@ Initial supported release artifacts are produced for:
 Each release includes one tarball per target triple plus
 `releases/manifest.json` with target and checksum metadata.
 
+Target-specific known issues and mitigations are tracked in
+`packaging/compatibility_matrix.conf` and are part of release-readiness review.
+
 ## Expected smoke-test behavior
 
 `packaging/smoke_test.sh` validates release behavior end-to-end:
