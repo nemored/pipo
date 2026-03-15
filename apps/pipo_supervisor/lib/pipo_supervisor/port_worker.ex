@@ -81,6 +81,7 @@ defmodule PipoSupervisor.PortWorker do
         Logger.error(
           "worker boot_failed instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count} reason=#{inspect(reason)}"
         )
+
         {:stop, reason, %{state | status: :stopped}}
     end
   end
@@ -89,6 +90,7 @@ defmodule PipoSupervisor.PortWorker do
     Logger.warning(
       "worker degraded instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count} reason=ready_timeout"
     )
+
     {:noreply, %{state | status: :degraded, ready_timer: nil}}
   end
 
@@ -148,6 +150,7 @@ defmodule PipoSupervisor.PortWorker do
 
   defp process_frame(%{"event" => "ready"}, state) do
     if state.ready_timer, do: Process.cancel_timer(state.ready_timer)
+
     Logger.info(
       "worker ready instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count}"
     )
@@ -161,6 +164,7 @@ defmodule PipoSupervisor.PortWorker do
         Logger.warning(
           "worker router_unavailable instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count}"
         )
+
         state
 
       _pid ->
@@ -216,7 +220,6 @@ defmodule PipoSupervisor.PortWorker do
       {:error, :enoent}
     end
   end
-
 
   defp restart_count_for(worker_id) do
     counts = :persistent_term.get(@restart_counter_key, %{})

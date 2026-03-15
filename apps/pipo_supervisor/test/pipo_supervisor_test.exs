@@ -125,7 +125,6 @@ defmodule PipoSupervisor.RouterTest do
   end
 end
 
-
 defmodule PipoSupervisor.ChaosTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
@@ -190,8 +189,12 @@ defmodule PipoSupervisor.ChaosTest do
          max_restarts: 100,
          max_seconds: 1,
          port_worker: [backoff_ms: 5, jitter_ms: 5, ready_timeout_ms: 50],
-         worker_overrides: %{healthy: [transport_path: healthy_transport], storm: [transport_path: crash_transport]}}
+         worker_overrides: %{
+           healthy: [transport_path: healthy_transport],
+           storm: [transport_path: crash_transport]
+         }}
       )
+
     {:ok, observer_worker} = TestWorker.start_link(self())
 
     assert :ok = PipoSupervisor.Router.register_worker(router, :observer, observer_worker)
