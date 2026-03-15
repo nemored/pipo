@@ -2,6 +2,7 @@
 
 - `build_tarball.sh` assembles the runtime tarball as `pipo-<version>-<target>.tar.gz`.
 - `smoke_test.sh` extracts a tarball and validates runtime startup behavior.
+- `migrate_config_format.py` converts legacy mixed config files into split `config.json` + `transports.json` format and extracts inline transport settings into per-transport JSON files.
 
 ## Initial supported target triples
 
