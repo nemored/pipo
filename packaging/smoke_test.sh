@@ -55,6 +55,8 @@ for path in "${required[@]}"; do
   fi
 done
 
+"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/validate_release_metadata.sh" "$archive_path"
+
 if [[ ! -x "$extract_root/bin/pipo_supervisor" ]]; then
   echo "expected executable bit on bin/pipo_supervisor" >&2
   exit 1
