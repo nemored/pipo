@@ -20,6 +20,7 @@ jobs:
     outputs:
       target_matrix: ${{ steps.resolve.outputs.target_matrix }}
     steps:
+      - uses: actions/checkout@v4
       - name: Resolve targets from SUPPORTED_TARGET_TRIPLES
         id: resolve
         env:
