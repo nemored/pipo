@@ -92,6 +92,28 @@ fn auth_failure_exits_code_10() {
     assert_eq!(status.code(), Some(10));
 }
 
+
+#[test]
+#[ignore = "pending chaos validation harness"]
+fn chaos_restart_storm_recovers_without_supervisor_deadlock() {
+    let status = run_runtime_check("chaos-restart-storm", "");
+    assert!(status.success(), "restart storm scenario should recover predictably");
+}
+
+#[test]
+#[ignore = "pending long-run stability harness"]
+fn long_run_stability_memory_trend_remains_bounded() {
+    let status = run_runtime_check("long-run-memory-trend", "");
+    assert!(status.success(), "long-run memory profile should remain bounded");
+}
+
+#[test]
+#[ignore = "pending compatibility matrix harness"]
+fn compatibility_matrix_covers_supported_target_triples() {
+    let status = run_packaging_check(["compatibility-matrix"]);
+    assert!(status.success(), "supported target triples should pass compatibility checks");
+}
+
 #[test]
 #[ignore = "pending release packaging pipeline"]
 fn packaging_tarball_contains_required_paths() {

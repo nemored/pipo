@@ -68,4 +68,38 @@ defmodule PipoSupervisor.RouterTest do
 
     assert_receive {:worker_degraded, :slow, 1, :timeout}, 500
   end
+
+  test "supports dynamic add/remove subscriptions and worker unregister" do
+    {:ok, router} =
+      start_supervised(
+        {PipoSupervisor.Router, name: :router_test_3, channel_mapping: %{source: ["alpha"]}}
+      )
+
+    {:ok, source_worker} = TestWorker.start_link(self())
+    {:ok, dynamic_worker} = TestWorker.start_link(self())
+
+    assert :ok = PipoSupervisor.Router.register_worker(router, :source, source_worker)
+    assert :ok = PipoSupervisor.Router.register_worker(router, :dynamic, dynamic_worker)
+
+    assert :ok = PipoSupervisor.Router.add_subscription(router, :dynamic, "alpha")
+
+    PipoSupervisor.Router.publish(router, :source, "alpha", %{"phase" => "added"})
+
+    assert_receive {:delivered, ^dynamic_worker,
+                    %{"bus" => "alpha", "payload" => %{"phase" => "added"}}},
+                   500
+
+    assert :ok = PipoSupervisor.Router.remove_subscription(router, :dynamic, "alpha")
+
+    PipoSupervisor.Router.publish(router, :source, "alpha", %{"phase" => "removed"})
+    refute_receive {:delivered, ^dynamic_worker, %{"payload" => %{"phase" => "removed"}}}, 150
+
+    assert :ok = PipoSupervisor.Router.unregister_worker(router, :dynamic)
+    assert :ok = PipoSupervisor.Router.add_subscription(router, :dynamic, "alpha")
+
+    PipoSupervisor.Router.publish(router, :source, "alpha", %{"phase" => "unregistered"})
+
+    refute_receive {:delivered, ^dynamic_worker, %{"payload" => %{"phase" => "unregistered"}}},
+                   150
+  end
 end
