@@ -26,6 +26,142 @@ and launch `bin/pipo_supervisor` from the extraction root.
    If `require_all_ready` is enabled, supervisor boot fails if any worker does
    not become ready within the configured timeout.
 
+## Configuration format (split runtime + transport catalog)
+
+The runtime bundle uses a **two-file configuration format**:
+
+1. `etc/pipo/config.json` (supervisor/runtime controls)
+2. `etc/pipo/transports.json` (transport inventory and per-transport config paths)
+
+This replaces the prior single-file style where runtime and transport entries
+were mixed together.
+
+### 1) Supervisor/runtime config (`config.json`)
+
+`config.json` contains process-level behavior and orchestration limits:
+
+- `protocol_version`: protocol contract version (`"v1"`)
+- `shutdown_timeout_ms`: worker shutdown grace period
+- `ready_timeout_ms`: max wait before a worker is marked degraded
+- `require_all_ready`: fail startup if any worker misses readiness timeout
+- `restart_intensity_max_restarts` / `restart_intensity_window_seconds`:
+  restart-storm circuit breaker
+- `backoff_min_ms` / `backoff_max_ms`: worker restart backoff window
+- `router_delivery_timeout_ms`: router-to-worker call timeout
+- `router_degraded_drop_threshold`: dropped-delivery threshold before degraded
+
+Example:
+
+```json
+{
+  "protocol_version": "v1",
+  "shutdown_timeout_ms": 2000,
+  "ready_timeout_ms": 5000,
+  "require_all_ready": false,
+  "restart_intensity_max_restarts": 3,
+  "restart_intensity_window_seconds": 10,
+  "backoff_min_ms": 100,
+  "backoff_max_ms": 1000,
+  "router_delivery_timeout_ms": 200,
+  "router_degraded_drop_threshold": 10
+}
+```
+
+### 2) Transport catalog (`transports.json`)
+
+`transports.json` describes which transport instances exist and where each
+transport-specific credential/settings document lives.
+
+Each `transports[]` entry supports:
+
+- `name`: transport selector passed to `pipo-transport --transport`
+- `enabled`: whether this transport should be launched
+- `instance_id`: stable worker instance identifier for logs/routing
+- `subscriptions`: logical buses consumed by the instance
+- `config_path`: path to transport-native JSON used by `pipo-transport --config`
+
+Example:
+
+```json
+{
+  "transports": [
+    {
+      "name": "slack",
+      "enabled": false,
+      "instance_id": "slack_0",
+      "subscriptions": ["general"],
+      "config_path": "./transport.slack.json"
+    }
+  ]
+}
+```
+
+### 3) Individual transport config files (`transport.<name>.json`)
+
+Each catalog entry points to its own transport-native config file via
+`config_path` (for example `./transport.slack.json`). The worker launches
+`pipo-transport --transport <name> --config <config_path>` for each enabled
+entry.
+
+Common requirements for every individual transport config file:
+
+- Must be valid JSON (invalid JSON exits with code `2`).
+- May contain transport-specific credentials/endpoints/channels as required by
+  that transport implementation.
+- Optionally may include `startup_failure` with `"auth"`, `"network"`, or
+  `"fatal"` to intentionally simulate startup failures for testing.
+
+Template files are provided under `etc/pipo/`:
+
+- `transport.slack.example.json`
+- `transport.discord.example.json`
+- `transport.irc.example.json`
+
+Slack-style example (`transport.slack.json`):
+
+```json
+{
+  "token": "xapp-***",
+  "bot_token": "xoxb-***",
+  "channel_mapping": {
+    "C012345": "general"
+  }
+}
+```
+
+Discord-style example (`transport.discord.json`):
+
+```json
+{
+  "token": "discord-bot-token",
+  "guild_id": 123456789012345678,
+  "channel_mapping": {
+    "987654321098765432": "general"
+  }
+}
+```
+
+IRC-style example (`transport.irc.json`):
+
+```json
+{
+  "nickname": "pipo",
+  "server": "irc.example.net:6697",
+  "use_tls": true,
+  "img_root": "https://cdn.example.net/pipo",
+  "channel_mapping": {
+    "#general": "general"
+  }
+}
+```
+
+### Migration note
+
+When moving from older config layouts, split shared runtime options into
+`config.json` and keep transport/credential pointers in `transports.json`.
+This separation makes global supervision tuning independent from transport
+enablement and secrets rotation.
+
 ## Environment overrides (binary/config resolution)
 
 ### Runtime process resolution

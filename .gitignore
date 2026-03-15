@@ -6,6 +6,9 @@
 *.json
 !etc/pipo/config.example.json
 !etc/pipo/transports.example.json
+!etc/pipo/transport.slack.example.json
+!etc/pipo/transport.discord.example.json
+!etc/pipo/transport.irc.example.json
 .DS_Store
 .vagrant/
 .dev.env

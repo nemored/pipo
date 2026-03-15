@@ -1,0 +1,9 @@
+{
+  "nickname": "pipo",
+  "server": "irc.example.net:6697",
+  "use_tls": true,
+  "img_root": "https://cdn.example.net/pipo",
+  "channel_mapping": {
+    "#general": "general"
+  }
+}
