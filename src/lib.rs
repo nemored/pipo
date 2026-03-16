@@ -35,7 +35,7 @@ enum Message {
         transport: String,
         username: String,
         avatar_url: Option<String>,
-        thread: Option<(Option<String>, Option<u64>)>,
+        thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
         is_edit: bool,
@@ -73,7 +73,7 @@ enum Message {
         remove: bool,
         username: Option<String>,
         avatar_url: Option<String>,
-        thread: Option<(Option<String>, Option<u64>)>,
+        thread: Option<ThreadRef>,
     },
     Text {
         sender: usize,
@@ -81,12 +81,21 @@ enum Message {
         transport: String,
         username: String,
         avatar_url: Option<String>,
-        thread: Option<(Option<String>, Option<u64>)>,
+        thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
         is_edit: bool,
         irc_flag: bool,
     },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ThreadRef {
+    origin_transport: String,
+    thread_root_id: Option<String>,
+    reply_target_id: Option<u64>,
+    root_author: Option<String>,
+    root_excerpt: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
