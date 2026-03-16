@@ -1,9 +1,15 @@
 package main
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/nemored/pipo/internal/config"
+	"github.com/nemored/pipo/internal/core"
+	"github.com/nemored/pipo/internal/transports"
 )
 
 func main() {
@@ -25,7 +31,26 @@ func run(args []string, getenv func(string) string) error {
 		return nil
 	}
 
-	return errors.New("Go rewrite runtime is not implemented yet")
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	transportRunners, err := transports.Build(cfg)
+	if err != nil {
+		return err
+	}
+
+	busIDs := make([]string, 0, len(cfg.Buses))
+	for _, bus := range cfg.Buses {
+		busIDs = append(busIDs, bus.ID)
+	}
+
+	runtime := core.NewRuntime(busIDs, transportRunners)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return runtime.Run(ctx)
 }
 
 func resolvePaths(args []string, getenv func(string) string) (string, string) {
