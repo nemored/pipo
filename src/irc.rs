@@ -6,7 +6,7 @@ use std::{
 use deadpool_sqlite::Pool;
 use irc::{
     client::prelude::{Client, Command, Config, Prefix},
-    proto::caps::Capability,
+    proto::{caps::Capability, command::CapSubCommand, message::Tag, Message as IrcMessage},
 };
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -26,6 +26,13 @@ pub(crate) struct IRC {
     channels: HashMap<String, broadcast::Sender<Message>>,
     pool: Pool,
     pipo_id: Arc<Mutex<i64>>,
+    capabilities: IrcCapabilityState,
+}
+
+#[derive(Clone, Debug, Default)]
+struct IrcCapabilityState {
+    supports_message_tags: bool,
+    supports_reply_tags: bool,
 }
 
 impl IRC {
@@ -76,6 +83,7 @@ impl IRC {
             transport_id,
             pool,
             pipo_id,
+            capabilities: IrcCapabilityState::default(),
         })
     }
 
@@ -96,7 +104,7 @@ impl IRC {
                         transport,
                         username,
                         avatar_url: _,
-                        thread: _,
+                        thread,
                         message,
                         attachments,
                         is_edit,
@@ -107,6 +115,7 @@ impl IRC {
                                            &channel,
                                            transport,
                                            username,
+                                           thread,
                                            message,
                                            attachments,
                                            is_edit,
@@ -175,7 +184,7 @@ impl IRC {
                         transport,
                         username,
                         avatar_url: _,
-                        thread: _,
+                        thread,
                         message,
                         attachments,
                         is_edit,
@@ -186,6 +195,7 @@ impl IRC {
                                          &channel,
                                          transport,
                                          username,
+                                         thread,
                                          message,
                                          attachments,
                                          is_edit,
@@ -203,10 +213,12 @@ impl IRC {
                     }
                     let message = message.unwrap();
                     let nickname = match message.prefix {
-                        Some(Prefix::Nickname(nickname, _, _)) => nickname,
-                        Some(Prefix::ServerName(servername)) => servername,
+                        Some(Prefix::Nickname(ref nickname, _, _)) => nickname.to_string(),
+                        Some(Prefix::ServerName(ref servername)) => servername.to_string(),
                         None => "".to_string(),
                     };
+                    self.update_capabilities_from_message(&message);
+
                     if let Command::PRIVMSG(channel, message)
                         = message.command {
                         if let Err(e) = self.handle_priv_msg(nickname,
@@ -240,6 +252,7 @@ impl IRC {
         channel: &str,
         transport: String,
         username: String,
+        thread: Option<crate::ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
         is_edit: bool,
@@ -276,7 +289,9 @@ impl IRC {
                     )
                 };
 
-                if let Err(e) = client.send_privmsg(channel.clone(), message.clone()) {
+                if let Err(e) =
+                    self.send_privmsg_with_tags(client, channel, message.clone(), &thread)
+                {
                     eprintln!(
                         "Failed to send message '{}' channel {}: {:#}",
                         message, channel, e
@@ -344,6 +359,7 @@ impl IRC {
         channel: &str,
         transport: String,
         username: String,
+        thread: Option<crate::ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
         is_edit: bool,
@@ -380,7 +396,9 @@ impl IRC {
                     )
                 };
 
-                if let Err(e) = client.send_privmsg(channel.clone(), message.clone()) {
+                if let Err(e) =
+                    self.send_privmsg_with_tags(client, channel, message.clone(), &thread)
+                {
                     eprintln!(
                         "Failed to send message '{}' channel {}: {:#}",
                         message, channel, e
@@ -461,7 +479,15 @@ impl IRC {
     )> {
         let mut client = Client::from_config(self.config.clone()).await?;
 
-        client.send_cap_req(&[Capability::MultiPrefix])?;
+        self.capabilities = IrcCapabilityState::default();
+
+        client.send_cap_req(&[
+            Capability::MultiPrefix,
+            Capability::Custom("message-tags"),
+            Capability::Custom("draft/reply"),
+            Capability::ServerTime,
+            Capability::EchoMessage,
+        ])?;
         client.identify()?;
 
         let irc_stream = client.stream()?;
@@ -477,6 +503,59 @@ impl IRC {
         }
 
         Ok((client, irc_stream, input_buses))
+    }
+
+    fn update_capabilities_from_message(&mut self, message: &IrcMessage) {
+        let Command::CAP(_, subcommand, _, Some(extensions)) = &message.command else {
+            return;
+        };
+
+        if *subcommand != CapSubCommand::ACK {
+            return;
+        }
+
+        for capability in extensions.split_whitespace() {
+            match capability {
+                "message-tags" => self.capabilities.supports_message_tags = true,
+                "draft/reply" | "reply" => self.capabilities.supports_reply_tags = true,
+                _ => continue,
+            }
+        }
+    }
+
+    fn send_privmsg_with_tags(
+        &self,
+        client: &Client,
+        channel: &str,
+        message: String,
+        thread: &Option<crate::ThreadRef>,
+    ) -> irc::error::Result<()> {
+        let tags = self.tags_for_outbound_message(thread);
+
+        if let Some(tags) = tags {
+            return client.send(IrcMessage {
+                tags: Some(tags),
+                prefix: None,
+                command: Command::PRIVMSG(channel.to_string(), message),
+            });
+        }
+
+        client.send_privmsg(channel, message)
+    }
+
+    fn tags_for_outbound_message(&self, thread: &Option<crate::ThreadRef>) -> Option<Vec<Tag>> {
+        if !self.capabilities.supports_message_tags || !self.capabilities.supports_reply_tags {
+            return None;
+        }
+
+        let reply_target = thread.as_ref().and_then(|thread_ref| {
+            thread_ref
+                .thread_root_id
+                .clone()
+                .or_else(|| thread_ref.reply_target_id.map(|id| id.to_string()))
+        })?;
+
+        Some(vec![Tag("+draft/reply".to_string(), Some(reply_target))])
     }
 
     async fn get_avatar_url(&self, nickname: &str) -> String {
