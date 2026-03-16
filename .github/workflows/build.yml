@@ -87,7 +87,6 @@ jobs:
           otp-version: "27.0"
           elixir-version: "1.17.2"
       - name: Build pipo-transport
-        working-directory: ${{ github.workspace }}
         run: |
           cargo build --manifest-path native/transport_runtime/Cargo.toml --bin pipo-transport
           echo "PIPO_TRANSPORT_BIN=$GITHUB_WORKSPACE/native/transport_runtime/target/debug/pipo-transport" >> "$GITHUB_ENV"
