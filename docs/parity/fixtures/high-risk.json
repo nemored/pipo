@@ -1,0 +1,30 @@
+{
+  "config_cases": [
+    {
+      "name": "valid-slack-discord",
+      "json": "{\n  \"buses\": [{\"id\":\"main\"}],\n  \"transports\": [\n    {\"transport\":\"Slack\",\"token\":\"x\",\"bot_token\":\"y\",\"channel_mapping\":{\"main\":\"C1\"}},\n    {\"transport\":\"Discord\",\"token\":\"z\",\"guild_id\":1,\"channel_mapping\":{\"main\":\"10\"}}\n  ]\n}"
+    },
+    {
+      "name": "unknown-field-discord",
+      "json": "{\n  \"buses\": [{\"id\":\"main\"}],\n  \"transports\": [\n    {\"transport\":\"Discord\",\"token\":\"z\",\"guild_id\":1,\"channel_mapping\":{\"main\":\"10\"},\"extra\":true}\n  ]\n}"
+    }
+  ],
+  "operation_cases": [
+    {
+      "name": "slack_discord_high_risk_routing",
+      "steps": [
+        {"op":"insert_slack","slack_id":"1700000000.100"},
+        {"op":"lookup_id_by_slack","slack_id":"1700000000.100"},
+        {"op":"update_discord","pipo_id":1,"discord_id":9911223344},
+        {"op":"lookup_discord_by_slack","slack_id":"1700000000.100"},
+        {"op":"route_edit_slack","slack_id":"1700000000.100","thread_slack_ts":"1700000000.100"},
+        {"op":"route_reaction_slack","slack_id":"1700000000.100","emoji":"thumbsup","remove":false,"thread_slack_ts":"1700000000.100"},
+        {"op":"insert_discord","discord_id":9911223345},
+        {"op":"lookup_id_by_discord","discord_id":9911223345},
+        {"op":"update_slack","pipo_id":2,"slack_id":"1700000001.500"},
+        {"op":"route_delete_discord","discord_id":9911223345,"thread_discord_id":445566},
+        {"op":"route_reaction_discord","discord_id":9911223345,"emoji":"rocket","remove":true,"thread_discord_id":445566}
+      ]
+    }
+  ]
+}

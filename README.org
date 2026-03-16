@@ -39,6 +39,17 @@ go build -o pipo-go ./cmd/pipo
 CONFIG_PATH=path-to-config.json DB_PATH=path-to-db.sqlite3 ./pipo-go
 #+END_SRC
 
+*** Cross-language parity harness (high-risk fixtures)
+Use the fixture harness to run Go and Rust fixture runners against the same
+config/event corpus, then compare normalized outputs + DB side effects.
+
+#+BEGIN_SRC bash
+go run ./cmd/parity-harness -fixture docs/parity/fixtures/high-risk.json
+#+END_SRC
+
+This currently focuses on Slack↔Discord ID mapping, edits/deletes, thread
+fields, and reaction routing.
+
 ** Tasks
 *** TODO Improve translation of Slack formatting to Markdown formatting
 
