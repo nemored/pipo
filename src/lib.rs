@@ -295,6 +295,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
                                            id        INTEGER PRIMARY KEY,
                                            slackid   TEXT,
                                            discordid INTEGER,
+                                           ircid     TEXT,
                                            modtime   DEFAULT 
                                              (strftime('%Y-%m-%d %H:%M:%S:%s',
                                                        'now', 
@@ -312,6 +313,15 @@ pub async fn inner_main() -> anyhow::Result<()> {
                         )?;
                     }
                     Err(e) => return Err(anyhow!(e)),
+                }
+
+                let ircid_exists = conn
+                    .prepare("PRAGMA table_info(messages)")?
+                    .query_map([], |row| row.get::<usize, String>(1))?
+                    .filter_map(Result::ok)
+                    .any(|column| column == "ircid");
+                if !ircid_exists {
+                    conn.execute("ALTER TABLE messages ADD COLUMN ircid TEXT", [])?;
                 }
 
                 Ok(
