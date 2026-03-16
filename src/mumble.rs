@@ -1,8 +1,7 @@
 use std::{
     collections::HashMap,
-    convert::{TryFrom, TryInto},
+    convert::TryInto,
     io::SeekFrom,
-    ops::Deref,
     sync::{Arc, Mutex},
 };
 
@@ -21,7 +20,10 @@ use tokio::{
 };
 use tokio_rustls::{
     client::TlsStream,
-    rustls::{Certificate, ClientConfig, OwnedTrustAnchor, RootCertStore, ServerName},
+    rustls::{
+        pki_types::{CertificateDer, ServerName},
+        ClientConfig, RootCertStore,
+    },
     TlsConnector,
 };
 use tokio_stream::{wrappers::BroadcastStream, StreamMap};
@@ -236,32 +238,26 @@ impl Mumble {
     async fn connect(&mut self) -> anyhow::Result<()> {
         eprintln!("Connecting...");
         let mut root_store = RootCertStore::empty();
-        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-            let subject = Vec::from(&*ta.subject);
-            let spki = Vec::from(&*ta.subject_public_key_info);
-            let name_constraints = ta.name_constraints.as_deref().map(|x| Vec::from(x));
-            OwnedTrustAnchor::from_subject_spki_name_constraints(subject, spki, name_constraints)
-        }));
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let config;
         if let Some(path) = self.server_cert.as_ref() {
             let mut file = File::open(path).await?;
             file.seek(SeekFrom::End(0)).await?;
             let len = file.stream_position().await? as usize;
             file.seek(SeekFrom::Start(0)).await?;
-            let mut cert = Certificate(Vec::new());
-            cert.0.resize(len, 0);
+            let mut cert = vec![0; len];
             let mut bytes_read = 0;
             while bytes_read < len {
-                bytes_read += file.read(cert.0.as_mut()).await?;
+                bytes_read += file.read(&mut cert[bytes_read..]).await?;
             }
-            root_store.add(&cert)?;
+            let cert = CertificateDer::from(cert);
+            root_store.add(cert.clone())?;
             config = ClientConfig::builder()
-                .with_safe_defaults()
+                .dangerous()
                 .with_custom_certificate_verifier(Arc::new(MumbleCertVerifier::new(cert)))
                 .with_no_client_auth();
         } else {
             config = ClientConfig::builder()
-                .with_safe_defaults()
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
         }
@@ -271,7 +267,7 @@ impl Mumble {
             .split_once(":")
             .or(Some((&self.server, "64738")))
             .unwrap();
-        let dns_name = ServerName::try_from(hostname)?;
+        let dns_name = ServerName::try_from(hostname.to_string())?;
         let socket = TcpStream::connect(self.server.as_ref())
             .await
             .context("Failed to connect to the TCP socket")?;
