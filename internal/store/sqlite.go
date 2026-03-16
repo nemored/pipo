@@ -109,6 +109,25 @@ func (s *SQLiteStore) InsertAllocatedID(ctx context.Context) (int64, error) {
 	return id, nil
 }
 
+// InsertAllocatedIDRachni preserves Rust's off-by-one return behavior for
+// Rachni: insert current id, increment shared counter, then return incremented value.
+func (s *SQLiteStore) InsertAllocatedIDRachni(ctx context.Context) (int64, error) {
+	s.mu.Lock()
+	id := s.nextID
+	s.nextID++
+	if s.nextID > maxPipoID {
+		s.nextID = 0
+	}
+	ret := s.nextID
+	s.mu.Unlock()
+
+	const q = `INSERT OR REPLACE INTO messages (id) VALUES (?1)`
+	if _, err := s.db.ExecContext(ctx, q, id); err != nil {
+		return 0, err
+	}
+	return ret, nil
+}
+
 func (s *SQLiteStore) InsertOrReplaceSlack(ctx context.Context, slackID string) (int64, error) {
 	id := s.allocID()
 	const q = `INSERT OR REPLACE INTO messages (id, slackid) VALUES (?1, ?2)`
