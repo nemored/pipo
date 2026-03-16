@@ -2328,7 +2328,7 @@ impl Slack {
                 Ok(format!("#{}", channel))
             }
             Element::Emoji { name } => Ok(format!(":{}:", name)),
-            Element::Link { url } => Ok(url.clone()),
+            Element::Link { url, .. } => Ok(url.clone()),
             Element::RichTextList {
                 elements,
                 style,
@@ -2460,6 +2460,10 @@ impl Slack {
                 "@{}",
                 self.get_user_display_name(Some(user_id.clone())).await?
             )),
+            Element::Broadcast { range } => Ok(format!("<!{}>", range)),
+            Element::Date { fallback, .. } => Ok(fallback.clone()),
+            Element::Team { team_id } => Ok(format!("<!team^{}>", team_id)),
+            Element::Usergroup { usergroup_id } => Ok(format!("<!subteam^{}>", usergroup_id)),
             _ => Err(anyhow!("Unhandled Element")),
         }
     }
