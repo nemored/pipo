@@ -240,6 +240,16 @@ where
     render_node(resolver, &build_ir(element), options).await
 }
 
+fn split_lines_preserving_empty(input: &str) -> Vec<String> {
+    input.split('\n').map(|line| line.to_string()).collect()
+}
+
+fn trim_trailing_empty_lines(lines: &mut Vec<String>) {
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+}
+
 #[async_recursion]
 pub async fn render_node<R>(
     resolver: &mut R,
@@ -250,7 +260,7 @@ where
     R: RichTextResolver + Send,
 {
     match node {
-        RichTextNode::Section(children) => render_children(resolver, children, options).await,
+        RichTextNode::Section(children) => render_section(resolver, children, options).await,
         RichTextNode::PlainText(text) => Ok(sanitize_irc_conflicts(text)),
         RichTextNode::StyleSpan {
             bold,
@@ -272,39 +282,55 @@ where
             indent,
             items,
         } => {
-            let mut rendered = String::new();
-            let indent_str = "\t".repeat(*indent as usize);
+            let mut lines = Vec::new();
+            let indent_str = "  ".repeat(*indent as usize);
             for (idx, item) in items.iter().enumerate() {
                 let bullet = if *ordered {
                     format!("{}.", idx + 1)
                 } else {
-                    "*".to_string()
+                    "-".to_string()
                 };
-                rendered.push_str(&format!(
-                    "{}{} {}\n",
-                    indent_str,
-                    bullet,
-                    render_node(resolver, item, options).await?
-                ));
+
+                let mut item_lines =
+                    split_lines_preserving_empty(&render_node(resolver, item, options).await?);
+                trim_trailing_empty_lines(&mut item_lines);
+                if item_lines.is_empty() {
+                    item_lines.push(String::new());
+                }
+
+                let first_prefix = format!("{}{} ", indent_str, bullet);
+                let continuation_prefix = " ".repeat(first_prefix.chars().count());
+
+                lines.push(format!("{first_prefix}{}", item_lines[0]));
+                for line in item_lines.iter().skip(1) {
+                    lines.push(format!("{continuation_prefix}{line}"));
+                }
             }
-            Ok(rendered)
+            Ok(lines.join("\n"))
         }
-        RichTextNode::QuoteBlock(children) => Ok(format!(
-            ">>> {}",
-            render_children(resolver, children, options).await?
-        )),
+        RichTextNode::QuoteBlock(children) => {
+            let mut lines =
+                split_lines_preserving_empty(&render_children(resolver, children, options).await?);
+            trim_trailing_empty_lines(&mut lines);
+            if lines.is_empty() {
+                lines.push(String::new());
+            }
+            Ok(lines
+                .into_iter()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
         RichTextNode::CodeSpan(text) => Ok(apply_irc_styles(
             &sanitize_irc_conflicts(text),
             &[(true, IrcStyle::Monospace)],
             options,
         )),
         RichTextNode::CodeBlock(children) => {
-            let body = render_children(resolver, children, options).await?;
-            Ok(apply_irc_styles(
-                &body,
-                &[(true, IrcStyle::Monospace)],
-                options,
-            ))
+            let mut raw_options = options;
+            raw_options.irc_formatting_enabled = false;
+            let body = render_children(resolver, children, raw_options).await?;
+            Ok(format!("```\n{}\n```", sanitize_irc_conflicts(&body)))
         }
         RichTextNode::Mention(Mention::User(user_id)) => Ok(format!(
             "@{}",
@@ -384,6 +410,46 @@ where
     Ok(rendered)
 }
 
+#[async_recursion]
+async fn render_section<R>(
+    resolver: &mut R,
+    children: &[RichTextNode],
+    options: RenderOptions,
+) -> Result<String>
+where
+    R: RichTextResolver + Send,
+{
+    let mut rendered = String::new();
+    let mut needs_separator = false;
+
+    for child in children {
+        match child {
+            RichTextNode::List { .. }
+            | RichTextNode::QuoteBlock(..)
+            | RichTextNode::CodeBlock(..) => {
+                if !rendered.is_empty() && !rendered.ends_with('\n') {
+                    rendered.push('\n');
+                }
+                rendered.push_str(&render_node(resolver, child, options).await?);
+                needs_separator = true;
+            }
+            RichTextNode::LineBreak => {
+                rendered.push('\n');
+                needs_separator = false;
+            }
+            _ => {
+                if needs_separator && !rendered.ends_with('\n') {
+                    rendered.push('\n');
+                }
+                rendered.push_str(&render_node(resolver, child, options).await?);
+                needs_separator = false;
+            }
+        }
+    }
+
+    Ok(rendered)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,7 +484,7 @@ mod tests {
         let rendered = render(&mut resolver, &element, RenderOptions::default())
             .await
             .unwrap();
-        assert_eq!(rendered, "\t1. @user-U123\n");
+        assert_eq!(rendered, "  1. @user-U123");
     }
 
     #[tokio::test]
@@ -497,5 +563,133 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(rendered, " hi ");
+    }
+
+    #[tokio::test]
+    async fn renders_nested_layouts_with_golden_fixtures() {
+        let list_in_quote = Element::RichTextQuote {
+            elements: vec![Element::RichTextSection {
+                elements: vec![
+                    Element::Text {
+                        text: "before".to_string(),
+                        style: None,
+                    },
+                    Element::Text {
+                        text: "\n".to_string(),
+                        style: None,
+                    },
+                    Element::RichTextList {
+                        elements: vec![
+                            Element::RichTextSection {
+                                elements: vec![Element::Text {
+                                    text: "alpha".to_string(),
+                                    style: None,
+                                }],
+                            },
+                            Element::RichTextSection {
+                                elements: vec![Element::Text {
+                                    text: "beta".to_string(),
+                                    style: None,
+                                }],
+                            },
+                        ],
+                        style: "bullet".to_string(),
+                        indent: 0,
+                        border: None,
+                    },
+                ],
+            }],
+        };
+
+        let quote_in_list = Element::RichTextList {
+            elements: vec![Element::RichTextSection {
+                elements: vec![
+                    Element::Text {
+                        text: "item".to_string(),
+                        style: None,
+                    },
+                    Element::Text {
+                        text: "\n".to_string(),
+                        style: None,
+                    },
+                    Element::RichTextQuote {
+                        elements: vec![Element::RichTextSection {
+                            elements: vec![
+                                Element::Text {
+                                    text: "q1".to_string(),
+                                    style: None,
+                                },
+                                Element::Text {
+                                    text: "\nq2".to_string(),
+                                    style: None,
+                                },
+                            ],
+                        }],
+                    },
+                ],
+            }],
+            style: "ordered".to_string(),
+            indent: 0,
+            border: None,
+        };
+
+        let code_within_list_item = Element::RichTextList {
+            elements: vec![Element::RichTextSection {
+                elements: vec![
+                    Element::Text {
+                        text: "run".to_string(),
+                        style: None,
+                    },
+                    Element::Text {
+                        text: "\n".to_string(),
+                        style: None,
+                    },
+                    Element::RichTextPreformatted {
+                        elements: vec![Element::RichTextSection {
+                            elements: vec![Element::Text {
+                                text: "echo hi\necho bye".to_string(),
+                                style: None,
+                            }],
+                        }],
+                    },
+                ],
+            }],
+            style: "bullet".to_string(),
+            indent: 0,
+            border: None,
+        };
+
+        let mut resolver = TestResolver;
+        let rendered_list_in_quote =
+            render(&mut resolver, &list_in_quote, RenderOptions::default())
+                .await
+                .unwrap();
+        assert_eq!(
+            rendered_list_in_quote,
+            include_str!("../../fixtures/rich_text/list_in_quote.golden").trim_end_matches('\n')
+        );
+
+        let mut resolver = TestResolver;
+        let rendered_quote_in_list =
+            render(&mut resolver, &quote_in_list, RenderOptions::default())
+                .await
+                .unwrap();
+        assert_eq!(
+            rendered_quote_in_list,
+            include_str!("../../fixtures/rich_text/quote_in_list.golden").trim_end_matches('\n')
+        );
+
+        let mut resolver = TestResolver;
+        let rendered_code_in_list = render(
+            &mut resolver,
+            &code_within_list_item,
+            RenderOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            rendered_code_in_list,
+            include_str!("../../fixtures/rich_text/code_within_list.golden").trim_end_matches('\n')
+        );
     }
 }
