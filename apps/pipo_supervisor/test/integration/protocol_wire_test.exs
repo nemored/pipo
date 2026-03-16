@@ -81,7 +81,16 @@ defmodule PipoSupervisor.ProtocolWireTest do
 
   defp transport_binary_path do
     System.get_env("PIPO_TRANSPORT_BIN") ||
+      fallback_transport_binary_path()
+  end
+
+  defp fallback_transport_binary_path do
+    [
+      Path.expand("../../../../target/debug/pipo-transport", __DIR__),
       Path.expand("../../../../native/transport_runtime/target/debug/pipo-transport", __DIR__)
+    ]
+    |> Enum.find(&File.exists?/1)
+    |> Kernel.||(Path.expand("../../../../target/debug/pipo-transport", __DIR__))
   end
 
   defp open_transport_port(transport_bin) do
