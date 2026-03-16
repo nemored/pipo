@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/nemored/pipo/internal/model"
+	"github.com/nemored/pipo/internal/telemetry"
 )
 
 var ErrUnknownBus = errors.New("unknown bus")
@@ -14,6 +16,8 @@ var ErrUnknownBus = errors.New("unknown bus")
 type Broker struct {
 	mu    sync.RWMutex
 	buses map[string]*bus
+	log   *slog.Logger
+	m     *telemetry.Metrics
 }
 
 type bus struct {
@@ -21,12 +25,12 @@ type bus struct {
 	subscribers map[chan model.Event]struct{}
 }
 
-func NewBroker(busIDs []string) *Broker {
+func NewBroker(busIDs []string, logger *slog.Logger, m *telemetry.Metrics) *Broker {
 	buses := make(map[string]*bus, len(busIDs))
 	for _, id := range busIDs {
 		buses[id] = &bus{id: id, subscribers: map[chan model.Event]struct{}{}}
 	}
-	return &Broker{buses: buses}
+	return &Broker{buses: buses, log: logger, m: m}
 }
 
 func (b *Broker) Publish(busID string, event model.Event) error {
@@ -41,6 +45,12 @@ func (b *Broker) Publish(busID string, event model.Event) error {
 		case ch <- event:
 		default:
 			// Drop when subscriber is saturated to avoid global stalls.
+			if b.m != nil {
+				b.m.IncQueuePressure()
+			}
+			if b.log != nil {
+				b.log.Warn("queue pressure drop", "bus_id", busID, "queue_len", len(ch), "queue_cap", cap(ch), "event_kind", event.Kind)
+			}
 		}
 	}
 	b.mu.RUnlock()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/nemored/pipo/internal/core"
 	"github.com/nemored/pipo/internal/model"
 	"github.com/nemored/pipo/internal/store"
+	"github.com/nemored/pipo/internal/telemetry"
 )
 
 var errReconnect = errors.New("reconnect requested")
@@ -23,6 +25,8 @@ type transportAdapter struct {
 	remoteToChannel map[string]string
 	buses           []string
 	store           *store.SQLiteStore
+	log             *slog.Logger
+	metrics         *telemetry.Metrics
 	connectFn       func(context.Context) error
 	sessionFn       func(context.Context, core.RuntimeAPI) error
 }
@@ -32,7 +36,19 @@ func (t *transportAdapter) Name() string { return t.name }
 func (t *transportAdapter) Run(ctx context.Context, api core.RuntimeAPI) error {
 	backoff := time.Second
 	for {
+		if t.metrics != nil {
+			t.metrics.IncConnectAttempt()
+		}
+		if t.log != nil {
+			t.log.Info("transport connect attempt", "transport", t.name)
+		}
 		if err := t.connectFn(ctx); err != nil {
+			if t.metrics != nil {
+				t.metrics.IncConnectFailure()
+			}
+			if t.log != nil {
+				t.log.Warn("transport connect failed", "transport", t.name, "error", err, "backoff", backoff.String())
+			}
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -41,6 +57,12 @@ func (t *transportAdapter) Run(ctx context.Context, api core.RuntimeAPI) error {
 			}
 			backoff = minDuration(backoff*2, 30*time.Second)
 			continue
+		}
+		if t.metrics != nil {
+			t.metrics.IncConnectSuccess()
+		}
+		if t.log != nil {
+			t.log.Info("transport connected", "transport", t.name)
 		}
 		backoff = time.Second
 		err := t.sessionFn(ctx, api)
@@ -51,10 +73,19 @@ func (t *transportAdapter) Run(ctx context.Context, api core.RuntimeAPI) error {
 			return nil
 		}
 		if errors.Is(err, errReconnect) {
+			if t.log != nil {
+				t.log.Warn("transport requested reconnect", "transport", t.name)
+			}
 			if !sleepWithContext(ctx, time.Second) {
 				return nil
 			}
 			continue
+		}
+		if t.metrics != nil {
+			t.metrics.IncForwardingFail()
+		}
+		if t.log != nil {
+			t.log.Error("transport session failed", "transport", t.name, "error", err)
 		}
 		return err
 	}
@@ -78,7 +109,7 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func baseAdapter(kind string, idx int, tc config.Transport, s *store.SQLiteStore) *transportAdapter {
+func baseAdapter(kind string, idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.Logger, m *telemetry.Metrics) *transportAdapter {
 	remoteToChannel := make(map[string]string, len(tc.ChannelMapping))
 	buses := make([]string, 0, len(tc.ChannelMapping))
 	for busID, remoteID := range tc.ChannelMapping {
@@ -92,8 +123,10 @@ func baseAdapter(kind string, idx int, tc config.Transport, s *store.SQLiteStore
 		remoteToChannel: remoteToChannel,
 		buses:           buses,
 		store:           s,
+		log:             logger,
+		metrics:         m,
 		connectFn:       func(context.Context) error { return nil },
-		sessionFn:       consumeOnlySession(buses),
+		sessionFn:       consumeOnlySession(buses, logger, m),
 	}
 }
 
@@ -105,12 +138,18 @@ func cloneMap(in map[string]string) map[string]string {
 	return out
 }
 
-func consumeOnlySession(buses []string) func(context.Context, core.RuntimeAPI) error {
+func consumeOnlySession(buses []string, logger *slog.Logger, m *telemetry.Metrics) func(context.Context, core.RuntimeAPI) error {
 	return func(ctx context.Context, api core.RuntimeAPI) error {
 		var wg sync.WaitGroup
 		for _, busID := range buses {
 			sub, err := api.Subscribe(ctx, busID, 64)
 			if err != nil {
+				if m != nil {
+					m.IncForwardingFail()
+				}
+				if logger != nil {
+					logger.Error("subscribe failed", "bus_id", busID, "error", err)
+				}
 				return err
 			}
 			wg.Add(1)
@@ -134,32 +173,32 @@ func consumeOnlySession(buses []string) func(context.Context, core.RuntimeAPI) e
 	}
 }
 
-func buildSlack(idx int, tc config.Transport, s *store.SQLiteStore) core.Transport {
-	t := baseAdapter("Slack", idx, tc, s)
+func buildSlack(idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.Logger, m *telemetry.Metrics) core.Transport {
+	t := baseAdapter("Slack", idx, tc, s, logger, m)
 	t.connectFn = func(context.Context) error { return nil }
 	return t
 }
 
-func buildDiscord(idx int, tc config.Transport, s *store.SQLiteStore) core.Transport {
-	t := baseAdapter("Discord", idx, tc, s)
+func buildDiscord(idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.Logger, m *telemetry.Metrics) core.Transport {
+	t := baseAdapter("Discord", idx, tc, s, logger, m)
 	t.connectFn = func(context.Context) error { return nil }
 	return t
 }
 
-func buildIRC(idx int, tc config.Transport, s *store.SQLiteStore) core.Transport {
-	t := baseAdapter("IRC", idx, tc, s)
+func buildIRC(idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.Logger, m *telemetry.Metrics) core.Transport {
+	t := baseAdapter("IRC", idx, tc, s, logger, m)
 	t.connectFn = func(context.Context) error { return nil }
 	return t
 }
 
-func buildMumble(idx int, tc config.Transport, s *store.SQLiteStore) core.Transport {
-	t := baseAdapter("Mumble", idx, tc, s)
+func buildMumble(idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.Logger, m *telemetry.Metrics) core.Transport {
+	t := baseAdapter("Mumble", idx, tc, s, logger, m)
 	t.connectFn = func(context.Context) error { return nil }
 	return t
 }
 
-func buildRachni(idx int, tc config.Transport, s *store.SQLiteStore) core.Transport {
-	t := baseAdapter("Rachni", idx, tc, s)
+func buildRachni(idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.Logger, m *telemetry.Metrics) core.Transport {
+	t := baseAdapter("Rachni", idx, tc, s, logger, m)
 	t.buses = append([]string(nil), tc.Buses...)
 	t.connectFn = func(context.Context) error { return nil }
 	return t

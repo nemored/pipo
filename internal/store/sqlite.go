@@ -29,20 +29,24 @@ type MessageRow struct {
 func OpenSQLite(ctx context.Context, path string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
+		observeDBError("open", err)
 		return nil, err
 	}
 	if err := db.PingContext(ctx); err != nil {
+		observeDBError("ping", err)
 		_ = db.Close()
 		return nil, err
 	}
 
 	if err := bootstrapMessagesSchema(ctx, db); err != nil {
+		observeDBError("bootstrap_schema", err)
 		_ = db.Close()
 		return nil, err
 	}
 
 	nextID, err := seedNextID(ctx, db)
 	if err != nil {
+		observeDBError("seed_next_id", err)
 		_ = db.Close()
 		return nil, err
 	}
@@ -59,6 +63,7 @@ func bootstrapMessagesSchema(ctx context.Context, db *sql.DB) error {
 	var name string
 	err := db.QueryRowContext(ctx, tableExists).Scan(&name)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		observeDBError("schema_table_exists", err)
 		return err
 	}
 	if err == nil {
@@ -79,6 +84,7 @@ func bootstrapMessagesSchema(ctx context.Context, db *sql.DB) error {
 		 where id = old.id;
 	end;`
 	_, err = db.ExecContext(ctx, schema)
+	observeDBError("schema_exec", err)
 	return err
 }
 
@@ -89,6 +95,7 @@ func seedNextID(ctx context.Context, db *sql.DB) (int64, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		id = 0
 	} else if err != nil {
+		observeDBError("seed_query", err)
 		return 0, err
 	}
 	return id + 1, nil
@@ -110,6 +117,7 @@ func (s *SQLiteStore) InsertAllocatedID(ctx context.Context) (int64, error) {
 	id := s.allocID()
 	const q = `INSERT OR REPLACE INTO messages (id) VALUES (?1)`
 	if _, err := s.db.ExecContext(ctx, q, id); err != nil {
+		observeDBError("insert_allocated_id", err)
 		return 0, err
 	}
 	return id, nil
@@ -129,6 +137,7 @@ func (s *SQLiteStore) InsertAllocatedIDRachni(ctx context.Context) (int64, error
 
 	const q = `INSERT OR REPLACE INTO messages (id) VALUES (?1)`
 	if _, err := s.db.ExecContext(ctx, q, id); err != nil {
+		observeDBError("insert_allocated_id_rachni", err)
 		return 0, err
 	}
 	return ret, nil
@@ -138,6 +147,7 @@ func (s *SQLiteStore) InsertOrReplaceSlack(ctx context.Context, slackID string) 
 	id := s.allocID()
 	const q = `INSERT OR REPLACE INTO messages (id, slackid) VALUES (?1, ?2)`
 	if _, err := s.db.ExecContext(ctx, q, id, slackID); err != nil {
+		observeDBError("insert_or_replace_slack", err)
 		return 0, err
 	}
 	return id, nil
@@ -146,6 +156,7 @@ func (s *SQLiteStore) InsertOrReplaceSlack(ctx context.Context, slackID string) 
 func (s *SQLiteStore) UpdateSlackByID(ctx context.Context, pipoID int64, slackID string) error {
 	const q = `UPDATE messages SET slackid = ?2 WHERE id = ?1`
 	_, err := s.db.ExecContext(ctx, q, pipoID, slackID)
+	observeDBError("update_slack_by_id", err)
 	return err
 }
 
@@ -157,6 +168,7 @@ func (s *SQLiteStore) SelectIDBySlack(ctx context.Context, slackID string) (*int
 		return nil, nil
 	}
 	if err != nil {
+		observeDBError("select_id_by_slack", err)
 		return nil, err
 	}
 	return &id, nil
@@ -170,6 +182,7 @@ func (s *SQLiteStore) SelectSlackByID(ctx context.Context, pipoID int64) (*strin
 		return nil, nil
 	}
 	if err != nil {
+		observeDBError("select_slack_by_id", err)
 		return nil, err
 	}
 	return &id, nil
@@ -183,6 +196,7 @@ func (s *SQLiteStore) SelectSlackByDiscord(ctx context.Context, discordID uint64
 		return nil, nil
 	}
 	if err != nil {
+		observeDBError("select_slack_by_discord", err)
 		return nil, err
 	}
 	return &id, nil
@@ -196,6 +210,7 @@ func (s *SQLiteStore) SelectDiscordBySlack(ctx context.Context, slackID string) 
 		return nil, nil
 	}
 	if err != nil {
+		observeDBError("select_discord_by_slack", err)
 		return nil, err
 	}
 	return &id, nil
@@ -205,6 +220,7 @@ func (s *SQLiteStore) InsertOrReplaceDiscord(ctx context.Context, discordID uint
 	id := s.allocID()
 	const q = `INSERT OR REPLACE INTO messages (id, discordid) VALUES (?1, ?2)`
 	if _, err := s.db.ExecContext(ctx, q, id, discordID); err != nil {
+		observeDBError("insert_or_replace_discord", err)
 		return 0, err
 	}
 	return id, nil
@@ -213,6 +229,7 @@ func (s *SQLiteStore) InsertOrReplaceDiscord(ctx context.Context, discordID uint
 func (s *SQLiteStore) UpdateDiscordByID(ctx context.Context, pipoID int64, discordID uint64) error {
 	const q = `UPDATE messages SET discordid = ?2 WHERE id = ?1`
 	_, err := s.db.ExecContext(ctx, q, pipoID, discordID)
+	observeDBError("update_discord_by_id", err)
 	return err
 }
 
@@ -224,6 +241,7 @@ func (s *SQLiteStore) SelectIDByDiscord(ctx context.Context, discordID uint64) (
 		return nil, nil
 	}
 	if err != nil {
+		observeDBError("select_id_by_discord", err)
 		return nil, err
 	}
 	return &id, nil
@@ -237,6 +255,7 @@ func (s *SQLiteStore) SelectDiscordByID(ctx context.Context, pipoID int64) (*uin
 		return nil, nil
 	}
 	if err != nil {
+		observeDBError("select_discord_by_id", err)
 		return nil, err
 	}
 	return &id, nil
@@ -252,6 +271,7 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 		modtime   DEFAULT (strftime('%Y-%m-%d %H:%M:%S:%s', 'now', 'localtime'))
 	)`
 	if _, err := s.db.ExecContext(ctx, createTable); err != nil {
+		observeDBError("migrate_create_table", err)
 		return err
 	}
 	const createTrigger = `CREATE TRIGGER IF NOT EXISTS updatemodtime
@@ -262,6 +282,7 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 		 where id = old.id;
 	end;`
 	if _, err := s.db.ExecContext(ctx, createTrigger); err != nil {
+		observeDBError("migrate_create_trigger", err)
 		return err
 	}
 	return nil
@@ -270,6 +291,7 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 func (s *SQLiteStore) DebugCount(ctx context.Context) (int64, error) {
 	var c int64
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages`).Scan(&c); err != nil {
+		observeDBError("debug_count", err)
 		return 0, fmt.Errorf("count messages: %w", err)
 	}
 	return c, nil
@@ -278,6 +300,7 @@ func (s *SQLiteStore) DebugCount(ctx context.Context) (int64, error) {
 func (s *SQLiteStore) DebugRows(ctx context.Context) ([]MessageRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, slackid, discordid FROM messages ORDER BY id`)
 	if err != nil {
+		observeDBError("debug_rows_query", err)
 		return nil, fmt.Errorf("query rows: %w", err)
 	}
 	defer rows.Close()
@@ -290,6 +313,7 @@ func (s *SQLiteStore) DebugRows(ctx context.Context) ([]MessageRow, error) {
 			discordRaw sql.NullInt64
 		)
 		if err := rows.Scan(&id, &slackRaw, &discordRaw); err != nil {
+			observeDBError("debug_rows_scan", err)
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
 		var slack *string
@@ -305,6 +329,7 @@ func (s *SQLiteStore) DebugRows(ctx context.Context) ([]MessageRow, error) {
 		out = append(out, MessageRow{ID: id, SlackID: slack, DiscordID: discord})
 	}
 	if err := rows.Err(); err != nil {
+		observeDBError("debug_rows_iterate", err)
 		return nil, fmt.Errorf("iterate rows: %w", err)
 	}
 	return out, nil

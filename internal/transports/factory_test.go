@@ -26,7 +26,7 @@ func TestBuildConstructsTypedAdapters(t *testing.T) {
 	}
 	defer s.Close()
 
-	got, err := Build(cfg, s)
+	got, err := Build(cfg, s, nil, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
