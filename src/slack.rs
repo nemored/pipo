@@ -28,7 +28,7 @@ use crate::Message;
 pub mod objects;
 mod rich_text_renderer;
 use objects::{Message as SlackMessage, *};
-use rich_text_renderer::RichTextResolver;
+use rich_text_renderer::{RenderOptions, RichTextResolver};
 //mod parse;
 //use parse::*;
 
@@ -47,6 +47,7 @@ pub(crate) struct Slack {
     id_map: HashMap<String, String>,
     users: HashMap<String, User>,
     seen_event_ids: VecDeque<String>,
+    irc_formatting_enabled: bool,
 }
 
 struct WebSocket {
@@ -64,6 +65,7 @@ impl Slack {
         pool: Pool,
         token: String,
         bot_token: String,
+        irc_formatting_enabled: bool,
         channel_mapping: &HashMap<Arc<String>, Arc<String>>,
     ) -> anyhow::Result<Slack> {
         let channels = channel_mapping
@@ -96,6 +98,7 @@ impl Slack {
             id_map: HashMap::new(),
             users: HashMap::new(),
             seen_event_ids: VecDeque::with_capacity(50),
+            irc_formatting_enabled,
         })
     }
 
@@ -2312,7 +2315,14 @@ impl Slack {
     }
 
     async fn convert_element_to_string(&mut self, element: &Element) -> anyhow::Result<String> {
-        rich_text_renderer::render(self, element).await
+        rich_text_renderer::render(
+            self,
+            element,
+            RenderOptions {
+                irc_formatting_enabled: self.irc_formatting_enabled,
+            },
+        )
+        .await
     }
 
     async fn parse_usernames(&mut self, text: &str) -> anyhow::Result<String> {

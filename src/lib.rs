@@ -214,6 +214,7 @@ enum ConfigTransport {
     Slack {
         token: Arc<String>,
         bot_token: Arc<String>,
+        irc_formatting_enabled: Option<bool>,
         channel_mapping: HashMap<Arc<String>, Arc<String>>,
     },
     Minecraft {
@@ -437,6 +438,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
             ConfigTransport::Slack {
                 token,
                 bot_token,
+                irc_formatting_enabled,
                 channel_mapping,
             } => {
                 let mut instance = Slack::new(
@@ -446,6 +448,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
                     db_pool.clone(),
                     token.to_string(),
                     bot_token.to_string(),
+                    irc_formatting_enabled.unwrap_or(true),
                     &channel_mapping,
                 )
                 .await?;

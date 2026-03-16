@@ -4,6 +4,40 @@ use serenity::async_trait;
 
 use super::objects::{Element, Style};
 
+const IRC_BOLD: char = '\u{0002}';
+const IRC_ITALIC: char = '\u{001d}';
+const IRC_MONOSPACE: char = '\u{0011}';
+const IRC_STRIKETHROUGH: char = '\u{001e}';
+const IRC_RESET: char = '\u{000f}';
+
+const IRC_STYLE_STACK: &[(IrcStyle, char)] = &[
+    (IrcStyle::Bold, IRC_BOLD),
+    (IrcStyle::Italic, IRC_ITALIC),
+    (IrcStyle::Strikethrough, IRC_STRIKETHROUGH),
+    (IrcStyle::Monospace, IRC_MONOSPACE),
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IrcStyle {
+    Bold,
+    Italic,
+    Strikethrough,
+    Monospace,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RenderOptions {
+    pub irc_formatting_enabled: bool,
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self {
+            irc_formatting_enabled: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RichTextNode {
     Section(Vec<RichTextNode>),
@@ -195,44 +229,42 @@ fn split_text_with_line_breaks(text: &str) -> Vec<RichTextNode> {
     nodes
 }
 
-pub async fn render<R>(resolver: &mut R, element: &Element) -> Result<String>
+pub async fn render<R>(
+    resolver: &mut R,
+    element: &Element,
+    options: RenderOptions,
+) -> Result<String>
 where
     R: RichTextResolver + Send,
 {
-    render_node(resolver, &build_ir(element)).await
+    render_node(resolver, &build_ir(element), options).await
 }
 
 #[async_recursion]
-pub async fn render_node<R>(resolver: &mut R, node: &RichTextNode) -> Result<String>
+pub async fn render_node<R>(
+    resolver: &mut R,
+    node: &RichTextNode,
+    options: RenderOptions,
+) -> Result<String>
 where
     R: RichTextResolver + Send,
 {
     match node {
-        RichTextNode::Section(children) => render_children(resolver, children).await,
-        RichTextNode::PlainText(text) => Ok(text.clone()),
+        RichTextNode::Section(children) => render_children(resolver, children, options).await,
+        RichTextNode::PlainText(text) => Ok(sanitize_irc_conflicts(text)),
         RichTextNode::StyleSpan {
             bold,
             italic,
             strike,
             children,
         } => {
-            let body = render_children(resolver, children).await?;
-            if *strike {
-                return Ok(format!("~~{}~~", body));
-            }
-
-            let mut prefix = String::new();
-            let mut suffix = String::new();
-            if *bold {
-                prefix.push_str("**");
-                suffix = format!("**{}", suffix);
-            }
-            if *italic {
-                prefix.push('*');
-                suffix = format!("*{}", suffix);
-            }
-
-            Ok(format!("{}{}{}", prefix, body, suffix))
+            let body = render_children(resolver, children, options).await?;
+            let styles = [
+                (*bold, IrcStyle::Bold),
+                (*italic, IrcStyle::Italic),
+                (*strike, IrcStyle::Strikethrough),
+            ];
+            Ok(apply_irc_styles(&body, &styles, options))
         }
         RichTextNode::LineBreak => Ok("\n".to_string()),
         RichTextNode::List {
@@ -252,20 +284,28 @@ where
                     "{}{} {}\n",
                     indent_str,
                     bullet,
-                    render_node(resolver, item).await?
+                    render_node(resolver, item, options).await?
                 ));
             }
             Ok(rendered)
         }
         RichTextNode::QuoteBlock(children) => Ok(format!(
             ">>> {}",
-            render_children(resolver, children).await?
+            render_children(resolver, children, options).await?
         )),
-        RichTextNode::CodeSpan(text) => Ok(format!("`{}`", text)),
-        RichTextNode::CodeBlock(children) => Ok(format!(
-            "```{}```",
-            render_children(resolver, children).await?
+        RichTextNode::CodeSpan(text) => Ok(apply_irc_styles(
+            &sanitize_irc_conflicts(text),
+            &[(true, IrcStyle::Monospace)],
+            options,
         )),
+        RichTextNode::CodeBlock(children) => {
+            let body = render_children(resolver, children, options).await?;
+            Ok(apply_irc_styles(
+                &body,
+                &[(true, IrcStyle::Monospace)],
+                options,
+            ))
+        }
         RichTextNode::Mention(Mention::User(user_id)) => Ok(format!(
             "@{}",
             resolver.resolve_user_display_name(user_id).await?
@@ -281,20 +321,65 @@ where
         RichTextNode::Mention(Mention::Usergroup(usergroup_id)) => {
             Ok(format!("<!subteam^{}>", usergroup_id))
         }
-        RichTextNode::Link { url, text } => Ok(text.clone().unwrap_or_else(|| url.clone())),
+        RichTextNode::Link { url, text } => Ok(sanitize_irc_conflicts(
+            &text.clone().unwrap_or_else(|| url.clone()),
+        )),
         RichTextNode::Emoji(name) => Ok(format!(":{}:", name)),
-        RichTextNode::Date(fallback) => Ok(fallback.clone()),
-        RichTextNode::Unsupported(desc) => Ok(format!("[{}]", desc)),
+        RichTextNode::Date(fallback) => Ok(sanitize_irc_conflicts(fallback)),
+        RichTextNode::Unsupported(desc) => Ok(format!("[{}]", sanitize_irc_conflicts(desc))),
     }
 }
 
-async fn render_children<R>(resolver: &mut R, children: &[RichTextNode]) -> Result<String>
+fn apply_irc_styles(body: &str, styles: &[(bool, IrcStyle)], options: RenderOptions) -> String {
+    if body.is_empty() {
+        return String::new();
+    }
+
+    if !options.irc_formatting_enabled {
+        return body.to_string();
+    }
+
+    let mut prefix = String::new();
+    for (style, code) in IRC_STYLE_STACK {
+        if styles
+            .iter()
+            .any(|(enabled, current)| *enabled && current == style)
+        {
+            prefix.push(*code);
+        }
+    }
+
+    if prefix.is_empty() {
+        body.to_string()
+    } else {
+        format!("{prefix}{body}{IRC_RESET}")
+    }
+}
+
+fn sanitize_irc_conflicts(input: &str) -> String {
+    input
+        .chars()
+        .filter(|ch| {
+            *ch != IRC_BOLD
+                && *ch != IRC_ITALIC
+                && *ch != IRC_MONOSPACE
+                && *ch != IRC_STRIKETHROUGH
+                && *ch != IRC_RESET
+        })
+        .collect()
+}
+
+async fn render_children<R>(
+    resolver: &mut R,
+    children: &[RichTextNode],
+    options: RenderOptions,
+) -> Result<String>
 where
     R: RichTextResolver + Send,
 {
     let mut rendered = String::new();
     for child in children {
-        rendered.push_str(&render_node(resolver, child).await?);
+        rendered.push_str(&render_node(resolver, child, options).await?);
     }
     Ok(rendered)
 }
@@ -330,7 +415,9 @@ mod tests {
         };
 
         let mut resolver = TestResolver;
-        let rendered = render(&mut resolver, &element).await.unwrap();
+        let rendered = render(&mut resolver, &element, RenderOptions::default())
+            .await
+            .unwrap();
         assert_eq!(rendered, "\t1. @user-U123\n");
     }
 
@@ -349,7 +436,66 @@ mod tests {
         };
 
         let mut resolver = TestResolver;
-        let rendered = render(&mut resolver, &element).await.unwrap();
+        let rendered = render(&mut resolver, &element, RenderOptions::default())
+            .await
+            .unwrap();
         assert!(rendered.contains("unsupported element"));
+    }
+
+    #[tokio::test]
+    async fn renders_irc_style_codes() {
+        let element = Element::Text {
+            text: " hi ".to_string(),
+            style: Some(Style {
+                bold: Some(true),
+                italic: Some(true),
+                strike: Some(false),
+                code: Some(false),
+            }),
+        };
+
+        let mut resolver = TestResolver;
+        let rendered = render(&mut resolver, &element, RenderOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(rendered, " \u{0002}\u{001d}hi\u{000f} ");
+    }
+
+    #[tokio::test]
+    async fn strips_embedded_irc_control_codes_from_plaintext() {
+        let element = Element::Text {
+            text: format!("bad{}text{}", '\u{0002}', '\u{001d}'),
+            style: None,
+        };
+
+        let mut resolver = TestResolver;
+        let rendered = render(&mut resolver, &element, RenderOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(rendered, "badtext");
+    }
+    #[tokio::test]
+    async fn can_disable_irc_style_codes() {
+        let element = Element::Text {
+            text: " hi ".to_string(),
+            style: Some(Style {
+                bold: Some(true),
+                italic: Some(true),
+                strike: Some(false),
+                code: Some(false),
+            }),
+        };
+
+        let mut resolver = TestResolver;
+        let rendered = render(
+            &mut resolver,
+            &element,
+            RenderOptions {
+                irc_formatting_enabled: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(rendered, " hi ");
     }
 }
