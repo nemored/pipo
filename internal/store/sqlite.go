@@ -20,6 +20,12 @@ type SQLiteStore struct {
 	nextID int64
 }
 
+type MessageRow struct {
+	ID        int64   `json:"id"`
+	SlackID   *string `json:"slack_id,omitempty"`
+	DiscordID *uint64 `json:"discord_id,omitempty"`
+}
+
 func OpenSQLite(ctx context.Context, path string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -267,4 +273,39 @@ func (s *SQLiteStore) DebugCount(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("count messages: %w", err)
 	}
 	return c, nil
+}
+
+func (s *SQLiteStore) DebugRows(ctx context.Context) ([]MessageRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, slackid, discordid FROM messages ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("query rows: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]MessageRow, 0)
+	for rows.Next() {
+		var (
+			id         int64
+			slackRaw   sql.NullString
+			discordRaw sql.NullInt64
+		)
+		if err := rows.Scan(&id, &slackRaw, &discordRaw); err != nil {
+			return nil, fmt.Errorf("scan row: %w", err)
+		}
+		var slack *string
+		if slackRaw.Valid {
+			v := slackRaw.String
+			slack = &v
+		}
+		var discord *uint64
+		if discordRaw.Valid {
+			v := uint64(discordRaw.Int64)
+			discord = &v
+		}
+		out = append(out, MessageRow{ID: id, SlackID: slack, DiscordID: discord})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
+	return out, nil
 }
