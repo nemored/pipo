@@ -90,7 +90,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           cargo build --manifest-path native/transport_runtime/Cargo.toml --bin pipo-transport
-          echo "PIPO_TRANSPORT_BIN=$GITHUB_WORKSPACE/native/transport_runtime/target/debug/pipo-transport" >> "$GITHUB_ENV"
+          echo "PIPO_TRANSPORT_BIN=$GITHUB_WORKSPACE/target/debug/pipo-transport" >> "$GITHUB_ENV"
       - name: Run protocol supervision integration tests
         run: |
           mix deps.get
