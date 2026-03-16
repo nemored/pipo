@@ -103,3 +103,28 @@ func TestSeedFromLatestModtime(t *testing.T) {
 		t.Fatalf("expected next id from latest modtime row to be 8, got %d", next)
 	}
 }
+
+func TestInsertAllocatedIDRachniReturnsPostIncrementValue(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer s.Close()
+
+	got, err := s.InsertAllocatedIDRachni(ctx)
+	if err != nil {
+		t.Fatalf("insert rachni id: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("expected post-increment id 2, got %d", got)
+	}
+
+	var c int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE id = 1`).Scan(&c); err != nil {
+		t.Fatalf("count inserted id: %v", err)
+	}
+	if c != 1 {
+		t.Fatalf("expected inserted row with id=1")
+	}
+}

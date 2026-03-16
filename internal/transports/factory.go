@@ -8,10 +8,10 @@ import (
 
 	"github.com/nemored/pipo/internal/config"
 	"github.com/nemored/pipo/internal/core"
-	"github.com/nemored/pipo/internal/transports/noop"
+	"github.com/nemored/pipo/internal/store"
 )
 
-func Build(cfg config.ParsedConfig) ([]core.Transport, error) {
+func Build(cfg config.ParsedConfig, db *store.SQLiteStore) ([]core.Transport, error) {
 	knownBuses := make(map[string]struct{}, len(cfg.Buses))
 	for _, bus := range cfg.Buses {
 		knownBuses[bus.ID] = struct{}{}
@@ -29,7 +29,22 @@ func Build(cfg config.ParsedConfig) ([]core.Transport, error) {
 				return nil, fmt.Errorf("transport %d (%s) references unknown bus %q", idx, tc.Kind, busID)
 			}
 		}
-		out = append(out, noop.New(fmt.Sprintf("%s[%d]", tc.Kind, idx), busIDs))
+		switch tc.Kind {
+		case "Slack":
+			out = append(out, buildSlack(idx, tc, db))
+		case "Discord":
+			out = append(out, buildDiscord(idx, tc, db))
+		case "IRC":
+			out = append(out, buildIRC(idx, tc, db))
+		case "Mumble":
+			out = append(out, buildMumble(idx, tc, db))
+		case "Rachni":
+			out = append(out, buildRachni(idx, tc, db))
+		case "Minecraft":
+			out = append(out, notImplementedTransport{name: fmt.Sprintf("%s[%d]", tc.Kind, idx)})
+		default:
+			return nil, fmt.Errorf("transport %d has unsupported type %q", idx, tc.Kind)
+		}
 	}
 	return out, nil
 }

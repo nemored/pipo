@@ -59,7 +59,7 @@ func run(args []string, getenv func(string) string) error {
 		return err
 	}
 
-	transportRunners, err := transports.Build(cfg)
+	transportRunners, err := transports.Build(cfg, s)
 	if err != nil {
 		return err
 	}
