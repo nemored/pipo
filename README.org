@@ -54,6 +54,17 @@ fields, and reaction routing.
 *** TODO Improve translation of Slack formatting to Markdown formatting
 
 
+
+** CI and release artifacts
+- Pull requests and branch pushes run both Rust and Go validation jobs.
+  - Rust: =cargo build --locked=, =cargo test --locked=, plus protobuf drift/runtime checks.
+  - Go: =gofmt= verification, =go vet ./...=, =go test ./...=, and a parity-harness smoke run with =docs/parity/fixtures/high-risk.json=.
+- Pushes to =main= build release binaries and upload them as workflow artifacts.
+- Semver tags matching =v*= also publish a GitHub release with all Go and Rust binaries plus =SHA256SUMS=.
+- Current release targets:
+  - Rust: =x86_64-unknown-linux-gnu=.
+  - Go: =linux/amd64=, =linux/arm64=, =darwin/amd64=, =darwin/arm64=, =windows/amd64=.
+
 ** Protobuf generation contract
 - Source proto path: =protos/Mumble.proto=
 - Generated output path: =src/protos=

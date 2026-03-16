@@ -1,29 +1,34 @@
-name: Build
+name: CI
 
 on:
   push:
     branches:
       - '*'
+    tags:
+      - 'v*'
   pull_request:
     branches:
-      - 'main'
-      - 'feature/matrix'
-      - 'feature/elixir-supervisor'
+      - main
+      - feature/matrix
+      - feature/elixir-supervisor
+      - rewrite/go-mainline
 
 jobs:
-  build:
+  rust-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+
       - name: install_deps
-        run: sudo apt install -y protobuf-compiler libsqlite3-dev
-      - name: build
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libsqlite3-dev
+
+      - name: Build (Rust)
         run: cargo build --locked --verbose
 
-      - name: test
+      - name: Test (Rust)
         run: cargo test --locked --verbose
 
-      - name: verify protobuf clean regeneration
+      - name: Verify protobuf clean regeneration
         run: |
           # This runs against the checked-out commit for the PR.
           # It only fails if the build mutates tracked files unexpectedly.
@@ -32,7 +37,7 @@ jobs:
           git update-index -q --refresh
           git diff --exit-code -- .
 
-      - name: verify protobuf major/runtime sanity
+      - name: Verify protobuf major/runtime sanity
         run: |
           versions=$(cargo tree --locked -e normal | rg -o "protobuf v[0-9]+\.[0-9]+\.[0-9]+" | sed 's/^protobuf v//' | cut -d. -f1 | sort -u)
           if echo "$versions" | rg -q '^2$' && echo "$versions" | rg -q '^3$'; then
@@ -46,23 +51,137 @@ jobs:
             exit 1
           fi
 
-  release:
+  go-test:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Verify gofmt
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt formatted:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (Go)
+        run: go test ./...
+
+      - name: Parity harness smoke test
+        run: go run ./cmd/parity-harness -fixture docs/parity/fixtures/high-risk.json
+
+  rust-package:
+    runs-on: ubuntu-latest
+    needs: rust-test
+    if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact_name: pipo-rust-x86_64-linux
+            bin_path: target/x86_64-unknown-linux-gnu/release/pipo
+    steps:
+      - uses: actions/checkout@v4
 
       - name: install_deps
-        run: sudo apt install -y protobuf-compiler libsqlite3-dev
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libsqlite3-dev
 
-      - name: Add x86_64 target
-        run: rustup target add x86_64-unknown-linux-gnu
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
 
-      - name: Build release artifact (x86_64 Linux)
-        run: cargo build --locked --release --target x86_64-unknown-linux-gnu
+      - name: Build release artifact (Rust)
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pipo-x86_64-linux
-          path: target/x86_64-unknown-linux-gnu/release/pipo
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.bin_path }}
+
+  go-package:
+    runs-on: ubuntu-latest
+    needs: go-test
+    if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ''
+          - goos: linux
+            goarch: arm64
+            ext: ''
+          - goos: darwin
+            goarch: amd64
+            ext: ''
+          - goos: darwin
+            goarch: arm64
+            ext: ''
+          - goos: windows
+            goarch: amd64
+            ext: '.exe'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build release artifact (Go)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w" -o "dist/pipo-go-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" ./cmd/pipo
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipo-go-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/pipo-go-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+
+  release-publish:
+    runs-on: ubuntu-latest
+    needs:
+      - rust-package
+      - go-package
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download Rust artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pipo-rust-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download Go artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pipo-go-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*

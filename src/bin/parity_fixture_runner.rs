@@ -35,18 +35,20 @@ struct Step {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ParsedConfig {
     buses: Vec<ConfigBus>,
     transports: Vec<ConfigTransport>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ConfigBus {
     id: String,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "transport")]
+#[serde(tag = "transport", deny_unknown_fields)]
 enum ConfigTransport {
     IRC {
         nickname: String,
@@ -137,7 +139,7 @@ fn main() -> anyhow::Result<()> {
             Err(err) => config_results.push(ConfigResult {
                 name: c.name,
                 ok: false,
-                detail: err.to_string(),
+                detail: normalize_config_error(&err.to_string()),
             }),
         }
     }
@@ -262,6 +264,13 @@ fn main() -> anyhow::Result<()> {
     };
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
+}
+
+fn normalize_config_error(msg: &str) -> String {
+    if msg.contains("unknown field") {
+        return "config parse error: unknown field".to_string();
+    }
+    "config parse error".to_string()
 }
 
 fn bootstrap(conn: &Connection) -> anyhow::Result<()> {
