@@ -64,7 +64,7 @@ jobs:
       - name: Lint
         run: mix format --check-formatted
       - name: Test
-        run: mix test
+        run: mix test --exclude integration
       - name: Build
         run: mix compile --warnings-as-errors
 
@@ -93,7 +93,7 @@ jobs:
       - name: Run protocol supervision integration tests
         run: |
           mix deps.get
-          mix test --include integration
+          mix test --only integration
 
   tarball-assembly:
     name: Packaging / tarball-assembly (${{ matrix.target_triple }})

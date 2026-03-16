@@ -5,16 +5,7 @@ defmodule PipoSupervisor.ProtocolWireTest do
   @port_timeout 1_500
 
   setup do
-    transport_bin = transport_binary_path()
-
-    if File.exists?(transport_bin) do
-      {:ok, transport_bin: transport_bin}
-    else
-      {:ok,
-       skip:
-         "pipo-transport binary not found at #{transport_bin}. " <>
-           "Set PIPO_TRANSPORT_BIN or build native/transport_runtime with cargo build."}
-    end
+    {:ok, transport_bin: transport_binary_path()}
   end
 
   test "health round-trip", %{transport_bin: transport_bin} do
