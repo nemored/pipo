@@ -9,7 +9,7 @@ import (
 )
 
 func TestBrokerPublishesToBusSubscribers(t *testing.T) {
-	b := NewBroker([]string{"alpha", "beta"})
+	b := NewBroker([]string{"alpha", "beta"}, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

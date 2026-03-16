@@ -3,9 +3,11 @@ package core
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/nemored/pipo/internal/model"
+	"github.com/nemored/pipo/internal/telemetry"
 )
 
 type RuntimeAPI interface {
@@ -21,10 +23,11 @@ type Transport interface {
 type Runtime struct {
 	broker     *Broker
 	transports []Transport
+	log        *slog.Logger
 }
 
-func NewRuntime(busIDs []string, transports []Transport) *Runtime {
-	return &Runtime{broker: NewBroker(busIDs), transports: transports}
+func NewRuntime(busIDs []string, transports []Transport, logger *slog.Logger, m *telemetry.Metrics) *Runtime {
+	return &Runtime{broker: NewBroker(busIDs, logger, m), transports: transports, log: logger}
 }
 
 func (r *Runtime) Publish(busID string, event model.Event) error {
@@ -47,9 +50,19 @@ func (r *Runtime) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if r.log != nil {
+				r.log.Info("transport starting", "transport", transport.Name())
+			}
 			if err := transport.Run(ctx, r); err != nil {
+				if r.log != nil {
+					r.log.Error("transport exited with error", "transport", transport.Name(), "error", err)
+				}
 				errCh <- fmt.Errorf("transport %s: %w", transport.Name(), err)
 				cancel()
+				return
+			}
+			if r.log != nil {
+				r.log.Info("transport stopped", "transport", transport.Name())
 			}
 		}()
 	}
