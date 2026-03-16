@@ -13,9 +13,30 @@ __/\\\\\\\\\\\\\____/\\\\\\\\\\\__/\\\\\\\\\\\\\_________/\\\\\______
 
 Pipo is the discord bot ever made.
 
-** Setup
+** Build and run
+*** Rust (legacy)
 #+BEGIN_SRC bash
-cargo run
+cargo run -- path-to-config.json path-to-db.sqlite3
+#+END_SRC
+
+You can also provide the paths via environment variables:
+
+#+BEGIN_SRC bash
+CONFIG_PATH=path-to-config.json DB_PATH=path-to-db.sqlite3 cargo run
+#+END_SRC
+
+*** Go rewrite branch workflow
+The Go rewrite currently focuses on CLI compatibility (argument/env parsing and usage output).
+
+#+BEGIN_SRC bash
+# Build the Go binary
+go build -o pipo-go ./cmd/pipo
+
+# Run with positional args
+./pipo-go path-to-config.json path-to-db.sqlite3
+
+# Or run with environment-variable fallback
+CONFIG_PATH=path-to-config.json DB_PATH=path-to-db.sqlite3 ./pipo-go
 #+END_SRC
 
 ** Tasks
