@@ -104,12 +104,22 @@ defmodule PipoSupervisor.PortWorker do
     {:noreply, next_state}
   end
 
-  def handle_info({port, {:exit_status, _status}}, %{port: port} = state) do
-    Logger.warning(
-      "worker transport_exit instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count}"
-    )
+  def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
+    case status do
+      10 ->
+        Logger.warning(
+          "worker auth_failure instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count}"
+        )
 
-    {:stop, :transport_exited, %{state | status: :stopped, port: nil}}
+        {:stop, :auth_failure, %{state | status: :stopped, port: nil}}
+
+      _ ->
+        Logger.warning(
+          "worker transport_exit status=#{status} instance_id=#{state.instance_id} worker_id=#{inspect(state.id)} transport=#{state.transport} restart_count=#{state.restart_count}"
+        )
+
+        {:stop, {:transport_exited, status}, %{state | status: :stopped, port: nil}}
+    end
   end
 
   @impl true

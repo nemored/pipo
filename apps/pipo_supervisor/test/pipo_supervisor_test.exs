@@ -344,6 +344,90 @@ defmodule PipoSupervisor.ChaosTest do
     assert_receive {:delivered, ^observer_worker, %{"payload" => %{"seq" => 2}}}, 500
   end
 
+  test "worker exit status 0 does not stop with auth_failure" do
+    transport = write_transport!("exit0_transport.sh", transport_exit_script(0))
+
+    Process.flag(:trap_exit, true)
+
+    {:ok, worker_pid} =
+      PipoSupervisor.PortWorker.start_link(
+        id: :exit_zero,
+        name: unique_name(:port_worker_exit_zero),
+        transport_path: transport,
+        router: unique_name(:missing_router),
+        backoff_ms: 0,
+        jitter_ms: 1,
+        ready_timeout_ms: 50,
+        shutdown_timeout_ms: 20
+      )
+
+    ref = Process.monitor(worker_pid)
+
+    assert_receive {:DOWN, ^ref, :process, ^worker_pid, reason}, 1_000
+    refute reason == {:shutdown, :auth_failure}
+  end
+
+  test "worker exit status non-10 non-zero stops with {:transport_exited, status} and supervisor restarts it" do
+    transport = write_transport!("exit12_transport.sh", transport_exit_script(12))
+
+    Process.flag(:trap_exit, true)
+
+    {:ok, _supervisor_pid} =
+      start_supervised(
+        {PipoSupervisor.Supervisor,
+         name: unique_name(:chaos_supervisor_exit12),
+         workers: [:flaky],
+         max_restarts: 100,
+         max_seconds: 1,
+         router: [name: unique_name(:chaos_router_exit12)],
+         port_worker: [
+           transport_path: transport,
+           backoff_ms: 0,
+           jitter_ms: 1,
+           ready_timeout_ms: 50
+         ]}
+      )
+
+    first = wait_for_worker(:flaky)
+    ref = Process.monitor(first)
+
+    assert_receive {:DOWN, ^ref, :process, ^first, {:transport_exited, 12}}, 1_000
+
+    Process.sleep(250)
+    second = wait_for_worker(:flaky)
+    assert second != first
+  end
+
+  test "worker exit status 10 stops with auth_failure and supervisor does not restart it" do
+    transport = write_transport!("exit10_transport.sh", transport_exit_script(10))
+
+    Process.flag(:trap_exit, true)
+
+    {:ok, _supervisor_pid} =
+      start_supervised(
+        {PipoSupervisor.Supervisor,
+         name: unique_name(:chaos_supervisor_exit10),
+         workers: [:auth_fail],
+         max_restarts: 100,
+         max_seconds: 1,
+         router: [name: unique_name(:chaos_router_exit10)],
+         port_worker: [
+           transport_path: transport,
+           backoff_ms: 0,
+           jitter_ms: 1,
+           ready_timeout_ms: 50
+         ]}
+      )
+
+    first = wait_for_worker(:auth_fail)
+    ref = Process.monitor(first)
+
+    assert_receive {:DOWN, ^ref, :process, ^first, {:shutdown, :auth_failure}}, 1_000
+
+    Process.sleep(250)
+    assert GenServer.whereis(PipoSupervisor.PortWorker.via_name(:auth_fail)) == nil
+  end
+
   defp wait_for_worker(id, attempts \\ 40)
 
   defp wait_for_worker(_id, 0), do: flunk("worker did not register")
@@ -379,6 +463,13 @@ printf '{\"event\":\"ready\"}\n'
 while IFS= read -r _line; do
   :
 done
+"
+  end
+
+  defp transport_exit_script(status) do
+    "#!/bin/sh
+printf '{\"type\":\"ready\"}\n'
+exit #{status}
 "
   end
 
