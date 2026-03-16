@@ -26,7 +26,9 @@ use tokio_tungstenite::*;
 use crate::Message;
 
 pub mod objects;
+mod rich_text_renderer;
 use objects::{Message as SlackMessage, *};
+use rich_text_renderer::RichTextResolver;
 //mod parse;
 //use parse::*;
 
@@ -2316,156 +2318,8 @@ impl Slack {
         Ok(())
     }
 
-    #[async_recursion]
     async fn convert_element_to_string(&mut self, element: &Element) -> anyhow::Result<String> {
-        match element {
-            Element::Channel { channel_id } => {
-                let channel = match self.id_map.get(channel_id) {
-                    Some(s) => s,
-                    None => "Unknown",
-                };
-
-                Ok(format!("#{}", channel))
-            }
-            Element::Emoji { name } => Ok(format!(":{}:", name)),
-            Element::Link { url, .. } => Ok(url.clone()),
-            Element::RichTextList {
-                elements,
-                style,
-                indent,
-                border: _,
-            } => {
-                let mut ret = String::new();
-                let mut indents = String::new();
-                let mut list_count: u32 = 0;
-
-                for _ in 0..*indent {
-                    indents.push_str("\t");
-                }
-
-                for element in elements.iter() {
-                    let list_char = if style == "ordered" {
-                        list_count += 1;
-
-                        format!("{}.", list_count)
-                    } else {
-                        "*".to_string()
-                    };
-
-                    ret.push_str(&format!(
-                        "{}{} {}\n",
-                        indents,
-                        list_char,
-                        &self.convert_element_to_string(element).await?
-                    ));
-                }
-
-                Ok(ret)
-            }
-            Element::RichTextPreformatted { elements } => {
-                let mut ret = String::new();
-
-                for element in elements.iter() {
-                    ret.push_str(&format!(
-                        "```{}```",
-                        &self.convert_element_to_string(element).await?
-                    ));
-                }
-
-                Ok(ret)
-            }
-            Element::RichTextQuote { elements } => {
-                let mut ret = String::new();
-
-                ret.push_str(">>> ");
-
-                for element in elements.iter() {
-                    ret.push_str(&format!(
-                        "{}",
-                        &self.convert_element_to_string(element).await?
-                    ));
-                }
-
-                Ok(ret)
-            }
-            Element::RichTextSection { elements } => {
-                let mut ret = String::new();
-
-                for element in elements.iter() {
-                    ret.push_str(&self.convert_element_to_string(element).await?);
-                }
-
-                Ok(ret)
-            }
-            Element::Text { text, style } => {
-                if let Some(style) = style {
-                    let mut markdown = String::new();
-                    let bold = style.bold.unwrap_or_else(|| false);
-                    let code = style.code.unwrap_or_else(|| false);
-                    let italic = style.italic.unwrap_or_else(|| false);
-                    let strike = style.strike.unwrap_or_else(|| false);
-
-                    if strike {
-                        markdown.push_str("~~");
-                    } else {
-                        if bold {
-                            markdown.push_str("**");
-                        }
-                        if italic {
-                            markdown.push('*');
-                        }
-                        if code {
-                            markdown.push('`');
-                        }
-                    }
-
-                    let mut head = String::new();
-                    let mut tail = String::new();
-
-                    let mut text = text.chars().rev().collect::<String>();
-
-                    while let Some(c) = text.pop() {
-                        if c == ' ' {
-                            head.push(c)
-                        } else {
-                            text.push(c);
-                            break;
-                        }
-                    }
-
-                    let mut text = text.chars().rev().collect::<String>();
-
-                    while let Some(c) = text.pop() {
-                        if c == ' ' {
-                            tail.push(c)
-                        } else {
-                            text.push(c);
-                            break;
-                        }
-                    }
-
-                    Ok(format!(
-                        "{}{}{}{}{}",
-                        head,
-                        markdown,
-                        &text,
-                        markdown.chars().rev().collect::<String>(),
-                        tail
-                    ))
-                } else {
-                    Ok(text.clone())
-                }
-            }
-            Element::User { user_id } => Ok(format!(
-                "@{}",
-                self.get_user_display_name(Some(user_id.clone())).await?
-            )),
-            Element::Broadcast { range } => Ok(format!("<!{}>", range)),
-            Element::Date { fallback, .. } => Ok(fallback.clone()),
-            Element::Team { team_id } => Ok(format!("<!team^{}>", team_id)),
-            Element::Usergroup { usergroup_id } => Ok(format!("<!subteam^{}>", usergroup_id)),
-            _ => Err(anyhow!("Unhandled Element")),
-        }
+        rich_text_renderer::render(self, element).await
     }
 
     async fn parse_usernames(&mut self, text: &str) -> anyhow::Result<String> {
@@ -2639,5 +2493,16 @@ impl Slack {
             }
         }
         text
+    }
+}
+
+#[serenity::async_trait]
+impl RichTextResolver for Slack {
+    async fn resolve_user_display_name(&mut self, user_id: &str) -> anyhow::Result<String> {
+        self.get_user_display_name(Some(user_id.to_string())).await
+    }
+
+    fn resolve_channel_name(&self, channel_id: &str) -> Option<String> {
+        self.id_map.get(channel_id).cloned()
     }
 }
