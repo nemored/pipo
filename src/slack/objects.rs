@@ -330,6 +330,7 @@ pub enum Block {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// Keep this enum Blocks-API compatible; update variants/fields as Slack schema evolves.
 pub enum Element {
     Button {
         text: Text,
@@ -342,6 +343,9 @@ pub enum Element {
         style: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         confirm: Option<ConfirmationDialog>,
+    },
+    Broadcast {
+        range: String,
     },
     Channel {
         channel_id: String,
@@ -386,6 +390,13 @@ pub enum Element {
         #[serde(skip_serializing_if = "Option::is_none")]
         confirm: Option<ConfirmationDialog>,
     },
+    Date {
+        timestamp: i64,
+        format: String,
+        fallback: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
     Emoji {
         name: String,
     },
@@ -405,6 +416,10 @@ pub enum Element {
     },
     Link {
         url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        style: Option<Style>,
     },
     MultiStaticSelect {
         placeholder: Text,
@@ -537,6 +552,12 @@ pub enum Element {
     },
     User {
         user_id: String,
+    },
+    Usergroup {
+        usergroup_id: String,
+    },
+    Team {
+        team_id: String,
     },
     UsersSelect {
         placeholder: Text,
@@ -878,5 +899,50 @@ impl Serialize for Timestamp {
         S: Serializer,
     {
         serializer.serialize_str(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_rich_text_elements_with_extended_types() {
+        let json = r#"
+        {
+          "type": "rich_text",
+          "elements": [
+            {
+              "type": "rich_text_section",
+              "elements": [
+                {"type": "broadcast", "range": "here"},
+                {"type": "text", "text": " ping "},
+                {
+                  "type": "link",
+                  "url": "https://example.com",
+                  "text": "Example",
+                  "style": {"bold": true, "italic": true}
+                },
+                {"type": "usergroup", "usergroup_id": "S123"},
+                {
+                  "type": "date",
+                  "timestamp": 1710000000,
+                  "format": "{date_num}",
+                  "fallback": "2024-03-09",
+                  "url": "https://example.com/date"
+                },
+                {"type": "team", "team_id": "T123"}
+              ]
+            }
+          ]
+        }
+        "#;
+
+        let block: Block = serde_json::from_str(json).expect("rich_text block should deserialize");
+
+        match block {
+            Block::RichText { elements, .. } => assert_eq!(elements.len(), 1),
+            other => panic!("unexpected block: {:?}", other),
+        }
     }
 }
