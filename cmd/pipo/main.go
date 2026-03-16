@@ -9,6 +9,7 @@ import (
 
 	"github.com/nemored/pipo/internal/config"
 	"github.com/nemored/pipo/internal/core"
+	"github.com/nemored/pipo/internal/store"
 	"github.com/nemored/pipo/internal/transports"
 )
 
@@ -20,16 +21,38 @@ func main() {
 }
 
 func run(args []string, getenv func(string) string) error {
-	configPath, dbPath := resolvePaths(args, getenv)
-	if configPath == "" || dbPath == "" {
-		binaryName := "pipo"
-		if len(args) > 0 && args[0] != "" {
-			binaryName = args[0]
+	if len(args) > 1 && args[1] == "migrate-db" {
+		dbPath := ""
+		if len(args) > 2 {
+			dbPath = args[2]
+		}
+		if dbPath == "" {
+			dbPath = getenv("DB_PATH")
+		}
+		if dbPath == "" {
+			fmt.Printf("Usage: %s migrate-db [path-to-db.sqlite3]\n", binaryName(args))
+			return nil
 		}
 
-		fmt.Printf("Usage: %s path-to-config.json [path-to-db.sqlite3]\n", binaryName)
+		s, err := store.OpenSQLite(context.Background(), dbPath)
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		return s.Migrate(context.Background())
+	}
+
+	configPath, dbPath := resolvePaths(args, getenv)
+	if configPath == "" || dbPath == "" {
+		fmt.Printf("Usage: %s path-to-config.json [path-to-db.sqlite3]\n", binaryName(args))
 		return nil
 	}
+
+	s, err := store.OpenSQLite(context.Background(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -51,6 +74,14 @@ func run(args []string, getenv func(string) string) error {
 	defer stop()
 
 	return runtime.Run(ctx)
+}
+
+func binaryName(args []string) string {
+	binaryName := "pipo"
+	if len(args) > 0 && args[0] != "" {
+		binaryName = args[0]
+	}
+	return binaryName
 }
 
 func resolvePaths(args []string, getenv func(string) string) (string, string) {
