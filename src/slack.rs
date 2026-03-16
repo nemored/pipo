@@ -1102,10 +1102,14 @@ impl Slack {
                     ("Bearer ".to_owned() + &self.bot_token).parse()?,
                 );
 
+                let url = reqwest::Url::parse_with_params(
+                    "https://slack.com/api/users.profile.get",
+                    &[("user", user.as_str())],
+                )?;
+
                 let response = self
                     .http
-                    .request(Method::GET, "https://slack.com/api/users.profile.get")
-                    .query(&[("user", user)])
+                    .request(Method::GET, url)
                     .headers(headers)
                     .send()
                     .await?;
@@ -1151,20 +1155,23 @@ impl Slack {
         );
 
         while paginate {
-            let mut query = Vec::new();
-            let request = self
-                .http
-                .request(Method::GET, "https://slack.com/api/users.list")
-                .headers(headers.clone())
-                .query(&query);
-
-            query.push(("limit", "100"));
+            let mut query = vec![("limit", "100")];
             if !cursor.is_empty() {
-                query.push(("cursor", &cursor));
+                query.push(("cursor", cursor.as_str()));
             }
 
-            let users_list: UsersList =
-                serde_json::from_str(request.send().await?.text().await?.as_str())?;
+            let url = reqwest::Url::parse_with_params("https://slack.com/api/users.list", &query)?;
+
+            let users_list: UsersList = serde_json::from_str(
+                self.http
+                    .request(Method::GET, url)
+                    .headers(headers.clone())
+                    .send()
+                    .await?
+                    .text()
+                    .await?
+                    .as_str(),
+            )?;
 
             if let Some(members) = users_list.members {
                 for user in members {
@@ -2500,16 +2507,20 @@ impl Slack {
             format!("Bearer {}", self.bot_token).parse()?,
         );
 
+        let url = reqwest::Url::parse_with_params(
+            "https://slack.com/api/conversations.history",
+            &[
+                ("channel", channel),
+                ("inclusive", "true"),
+                ("latest", ts.0.as_str()),
+                ("limit", "1"),
+            ],
+        )?;
+
         let response = self
             .http
-            .request(Method::GET, "https://slack.com/api/conversations.history")
+            .request(Method::GET, url)
             .headers(headers)
-            .query(&[
-                ("channel", channel.to_string()),
-                ("inclusive", String::from("true")),
-                ("latest", ts.0.clone()),
-                ("limit", String::from("1")),
-            ])
             .send()
             .await?;
 
@@ -2544,11 +2555,12 @@ impl Slack {
             format!("Bearer {}", self.bot_token).parse()?,
         );
 
+        let url = reqwest::Url::parse_with_params("https://slack.com/api/users.info", &[("user", user)])?;
+
         let response = self
             .http
-            .request(Method::GET, "https://slack.com/api/users.info")
+            .request(Method::GET, url)
             .headers(headers)
-            .query(&[("user", user.to_string())])
             .send()
             .await?;
 
