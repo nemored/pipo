@@ -24,7 +24,7 @@ use serenity::{
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt, StreamMap};
 
-use crate::Message;
+use crate::{Message, ThreadRef};
 
 const TRANSPORT_NAME: &'static str = "Discord";
 
@@ -266,7 +266,10 @@ impl RealHandler {
                     {
                         Some(webhook) => webhook,
                         None => match channel_id
-                            .create_webhook(http, CreateWebhook::new(format!("PIPO {}", channel_id)))
+                            .create_webhook(
+                                http,
+                                CreateWebhook::new(format!("PIPO {}", channel_id)),
+                            )
                             .await
                         {
                             Ok(webhook) => webhook,
@@ -856,12 +859,16 @@ impl RealHandler {
     async fn get_sender_and_thread(
         &self,
         channel_id: ChannelId,
-        thread: &mut Option<(Option<String>, Option<u64>)>,
+        thread: &mut Option<ThreadRef>,
     ) -> Option<broadcast::Sender<Message>> {
         if let Some(sender) = self.shared.get_sender(channel_id) {
             return Some(sender);
         } else if let Some(parent) = self.shared.get_thread(channel_id) {
-            *thread = Some((None, Some(channel_id.get())));
+            *thread = Some(ThreadRef {
+                origin_transport: TRANSPORT_NAME.to_string(),
+                reply_target_id: Some(channel_id.get()),
+                ..Default::default()
+            });
 
             return self.shared.get_sender(parent);
         } else {
@@ -946,7 +953,9 @@ impl RealHandler {
 
                                 let user = if let Ok(id) = id.parse() {
                                     if is_role {
-                                        if let Ok(roles) = http.get_guild_roles(GuildId::new(guild_id)).await {
+                                        if let Ok(roles) =
+                                            http.get_guild_roles(GuildId::new(guild_id)).await
+                                        {
                                             if let Some(role) =
                                                 roles.into_iter().find(|r| r.id == RoleId::new(id))
                                             {
@@ -958,7 +967,10 @@ impl RealHandler {
                                             "Unknown".to_string()
                                         }
                                     } else if is_nickname {
-                                        match http.get_member(GuildId::new(guild_id), UserId::new(id)).await {
+                                        match http
+                                            .get_member(GuildId::new(guild_id), UserId::new(id))
+                                            .await
+                                        {
                                             Ok(m) => {
                                                 if let Some(n) = m.nick {
                                                     n
@@ -1074,7 +1086,10 @@ impl RealHandler {
                             }
 
                             name = if let Ok(id) = id.parse() {
-                                if let Ok(e) = http.get_emoji(GuildId::new(guild_id), EmojiId::new(id)).await {
+                                if let Ok(e) = http
+                                    .get_emoji(GuildId::new(guild_id), EmojiId::new(id))
+                                    .await
+                                {
                                     e.name
                                 } else {
                                     name
@@ -1133,7 +1148,10 @@ impl RealHandler {
                                     }
 
                                     name = if let Ok(id) = id.parse() {
-                                        if let Ok(e) = http.get_emoji(GuildId::new(guild_id), EmojiId::new(id)).await {
+                                        if let Ok(e) = http
+                                            .get_emoji(GuildId::new(guild_id), EmojiId::new(id))
+                                            .await
+                                        {
                                             e.name
                                         } else {
                                             name
@@ -1272,7 +1290,12 @@ impl EventHandler for Handler {
             .await;
     }
 
-    async fn channel_update(&self, _ctx: Context, _old: Option<GuildChannel>, channel: GuildChannel) {
+    async fn channel_update(
+        &self,
+        _ctx: Context,
+        _old: Option<GuildChannel>,
+        channel: GuildChannel,
+    ) {
         eprintln!("Channel updated: {}", channel);
     }
 
@@ -1321,7 +1344,13 @@ impl EventHandler for Handler {
             .await;
     }
 
-    async fn message_update(&self, ctx: Context, _old_if_available: Option<SerenityMessage>, _new_if_available: Option<SerenityMessage>, msg: MessageUpdateEvent) {
+    async fn message_update(
+        &self,
+        ctx: Context,
+        _old_if_available: Option<SerenityMessage>,
+        _new_if_available: Option<SerenityMessage>,
+        msg: MessageUpdateEvent,
+    ) {
         self.real_handler
             .lock()
             .await
@@ -1548,7 +1577,13 @@ impl Discord {
                     None => String::from("New Thread"),
                 };
                 let ret = channel
-                    .create_thread_from_message(http, id, CreateThread::new(name).auto_archive_duration(AutoArchiveDuration::OneDay).kind(ChannelType::PublicThread))
+                    .create_thread_from_message(
+                        http,
+                        id,
+                        CreateThread::new(name)
+                            .auto_archive_duration(AutoArchiveDuration::OneDay)
+                            .kind(ChannelType::PublicThread),
+                    )
                     .await;
 
                 if let Ok(thread) = ret {
@@ -1627,7 +1662,11 @@ impl Discord {
             if let Some(id) = id {
                 if let Ok(wh) = WebhookId::from(id).to_webhook(http).await {
                     if let Ok(msg) = wh
-                        .edit_message(http, msgid, EditWebhookMessage::new().content(content.to_string()))
+                        .edit_message(
+                            http,
+                            msgid,
+                            EditWebhookMessage::new().content(content.to_string()),
+                        )
                         .await
                     {
                         return self.update_messages_table(pipo_id, msg).await;
@@ -1758,7 +1797,7 @@ impl Discord {
         transport: String,
         username: String,
         avatar_url: Option<String>,
-        thread: Option<(Option<String>, Option<u64>)>,
+        thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<crate::Attachment>>,
         is_edit: bool,
@@ -1770,7 +1809,10 @@ impl Discord {
         let mut content = MessageBuilder::new();
         let http = self.cache_http.as_ref().unwrap().http();
         let channel = match thread {
-            Some((s, _)) => self.get_threadid(channel, s, &message).await?,
+            Some(thread_ref) => {
+                self.get_threadid(channel, thread_ref.thread_root_id, &message)
+                    .await?
+            }
             None => channel,
         };
 
@@ -1818,7 +1860,11 @@ impl Discord {
             if let Some(id) = id {
                 if let Ok(wh) = WebhookId::from(id).to_webhook(http).await {
                     if let Ok(msg) = wh
-                        .edit_message(http, msgid, EditWebhookMessage::new().content(content.to_string()))
+                        .edit_message(
+                            http,
+                            msgid,
+                            EditWebhookMessage::new().content(content.to_string()),
+                        )
                         .await
                     {
                         return self.update_messages_table(pipo_id, msg).await;
@@ -2172,6 +2218,13 @@ mod tests {
             .await;
 
         assert!(sender.is_some());
-        assert_eq!(thread, Some((None, Some(66))));
+        assert_eq!(
+            thread,
+            Some(ThreadRef {
+                origin_transport: TRANSPORT_NAME.to_string(),
+                reply_target_id: Some(66),
+                ..Default::default()
+            })
+        );
     }
 }

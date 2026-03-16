@@ -23,7 +23,7 @@ use tokio::{net::TcpStream, sync::broadcast};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt, StreamMap};
 use tokio_tungstenite::*;
 
-use crate::Message;
+use crate::{Message, ThreadRef};
 
 pub mod objects;
 use objects::{Message as SlackMessage, *};
@@ -430,7 +430,7 @@ impl Slack {
         emoji: String,
         _username: Option<String>,
         _avatar_url: Option<String>,
-        _thread: Option<(Option<String>, Option<u64>)>,
+        _thread: Option<ThreadRef>,
     ) -> anyhow::Result<()> {
         let mut headers = HeaderMap::new();
         let channel = match self.channel_map.get(channel) {
@@ -619,13 +619,13 @@ impl Slack {
         transport: String,
         username: String,
         avatar_url: Option<String>,
-        thread: Option<(Option<String>, Option<u64>)>,
+        thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<crate::Attachment>>,
         is_edit: bool,
     ) -> anyhow::Result<()> {
         let thread_ts = match thread {
-            Some((s, _)) => s,
+            Some(thread_ref) => thread_ref.thread_root_id,
             None => None,
         };
         let message = message.map(|s| format!("_{}_", s));
@@ -803,15 +803,15 @@ impl Slack {
         transport: String,
         username: String,
         avatar_url: Option<String>,
-        thread: Option<(Option<String>, Option<u64>)>,
+        thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<crate::Attachment>>,
         is_edit: bool,
     ) -> anyhow::Result<()> {
         let thread_ts = match thread {
-            Some((_, d)) => match d {
-                Some(d) => self.get_slackid_from_discordid(d).await?,
-                None => None,
+            Some(thread_ref) => match thread_ref.reply_target_id {
+                Some(reply_target_id) => self.get_slackid_from_discordid(reply_target_id).await?,
+                None => thread_ref.thread_root_id,
             },
             None => None,
         };
@@ -923,7 +923,7 @@ impl Slack {
         emoji: String,
         _username: Option<String>,
         _avatar_url: Option<String>,
-        _thread: Option<(Option<String>, Option<u64>)>,
+        _thread: Option<ThreadRef>,
     ) -> anyhow::Result<()> {
         let mut headers = HeaderMap::new();
         let channel = match self.channel_map.get(channel) {
@@ -1508,6 +1508,24 @@ impl Slack {
         }
     }
 
+    async fn build_slack_thread_ref(
+        &self,
+        thread_ts: Option<String>,
+    ) -> anyhow::Result<Option<ThreadRef>> {
+        let Some(thread_root_id) = thread_ts else {
+            return Ok(None);
+        };
+
+        Ok(Some(ThreadRef {
+            origin_transport: TRANSPORT_NAME.to_string(),
+            reply_target_id: self
+                .select_discordid_from_messages(thread_root_id.clone())
+                .await?,
+            thread_root_id: Some(thread_root_id),
+            ..Default::default()
+        }))
+    }
+
     async fn handle_bot_message(
         &mut self,
         ts: Option<String>,
@@ -1518,13 +1536,7 @@ impl Slack {
         _hidden: bool,
         is_edit: bool,
     ) -> anyhow::Result<()> {
-        let _thread = match thread_ts {
-            Some(ts) => Some((
-                Some(ts.clone()),
-                self.select_discordid_from_messages(ts).await?,
-            )),
-            None => None,
-        };
+        let _thread = self.build_slack_thread_ref(thread_ts).await?;
         let pipo_id = match ts {
             Some(ts) => match self.select_id_from_messages(&ts).await {
                 Some(id) => id,
@@ -1933,10 +1945,7 @@ impl Slack {
     ) -> anyhow::Result<()> {
         let has_message = message.is_some();
         let has_attachments = attachments.is_some();
-        let thread = match thread_ts {
-            Some(ts) => Some((Some(ts.clone()), None)),
-            None => None,
-        };
+        let thread = self.build_slack_thread_ref(thread_ts).await?;
         let ts = ts.ok_or_else(|| anyhow!("Message has no timestamp."))?;
         let pipo_id = match self.select_id_from_messages(&ts).await {
             Some(id) => id,
