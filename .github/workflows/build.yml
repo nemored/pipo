@@ -64,7 +64,7 @@ jobs:
       - name: Lint
         run: mix format --check-formatted
       - name: Test
-        run: mix test
+        run: mix test --exclude integration
       - name: Build
         run: mix compile --warnings-as-errors
 
@@ -74,10 +74,27 @@ jobs:
     needs:
       - rust-transport-runtime
       - elixir-pipo-supervisor
+    defaults:
+      run:
+        working-directory: apps/pipo_supervisor
     steps:
       - uses: actions/checkout@v4
-      - name: Verify integration wiring
-        run: ./scripts/integration_protocol_supervision.sh
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Set up BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.0"
+          elixir-version: "1.17.2"
+      - name: Build pipo-transport
+        working-directory: ${{ github.workspace }}
+        run: |
+          cargo build --manifest-path native/transport_runtime/Cargo.toml --bin pipo-transport
+          echo "PIPO_TRANSPORT_BIN=$GITHUB_WORKSPACE/target/debug/pipo-transport" >> "$GITHUB_ENV"
+      - name: Run protocol supervision integration tests
+        run: |
+          mix deps.get
+          mix test --only integration
 
   tarball-assembly:
     name: Packaging / tarball-assembly (${{ matrix.target_triple }})
