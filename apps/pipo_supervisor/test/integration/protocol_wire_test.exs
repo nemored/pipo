@@ -64,6 +64,21 @@ defmodule PipoSupervisor.ProtocolWireTest do
     assert Port.info(port) != nil
   end
 
+
+  test "startup auth failure exits with status 10 and does not restart", %{transport_bin: transport_bin} do
+    {port, config_path} = open_transport_port(transport_bin, %{"startup_failure" => "auth"})
+
+    on_exit(fn ->
+      File.rm(config_path)
+    end)
+
+    assert_receive {^port, {:exit_status, 10}}, @port_timeout
+    assert Port.info(port) == nil
+
+    refute_receive {^port, {:data, _}}, 250
+    refute_receive {^port, {:exit_status, _}}, 250
+  end
+
   test "shutdown", %{transport_bin: transport_bin} do
     {port, config_path} = open_transport_port(transport_bin)
 
@@ -93,8 +108,8 @@ defmodule PipoSupervisor.ProtocolWireTest do
     |> Kernel.||(Path.expand("../../../../target/debug/pipo-transport", __DIR__))
   end
 
-  defp open_transport_port(transport_bin) do
-    config_path = write_config!()
+  defp open_transport_port(transport_bin, config \\ %{}) do
+    config_path = write_config!(config)
 
     args = [
       "--transport",
@@ -117,14 +132,14 @@ defmodule PipoSupervisor.ProtocolWireTest do
     {port, config_path}
   end
 
-  defp write_config! do
+  defp write_config!(config) do
     path =
       Path.join(
         System.tmp_dir!(),
         "pipo-transport-config-#{System.unique_integer([:positive])}.json"
       )
 
-    File.write!(path, "{}")
+    File.write!(path, Jason.encode!(config))
     path
   end
 
