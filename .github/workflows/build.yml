@@ -7,8 +7,7 @@ on:
   pull_request:
     branches:
       - 'main'
-      - 'feature/matrix'
-      - 'feature/elixir-supervisor'
+      - 'feature/**'
 
 jobs:
   build:
