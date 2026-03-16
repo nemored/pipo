@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"strings"
 
 	"github.com/nemored/pipo/internal/config"
 	"github.com/nemored/pipo/internal/store"
@@ -108,7 +109,7 @@ func runGoSummary(f fixtureSet) (summary, error) {
 		}
 		err := decodeStrict([]byte(c.JSON), &cfg)
 		if err != nil {
-			out.ConfigResults = append(out.ConfigResults, configResult{Name: c.Name, OK: false, Detail: err.Error()})
+			out.ConfigResults = append(out.ConfigResults, configResult{Name: c.Name, OK: false, Detail: normalizeConfigError(err.Error())})
 			continue
 		}
 		out.ConfigResults = append(out.ConfigResults, configResult{Name: c.Name, OK: true, Detail: fmt.Sprintf("parsed buses=%d transports=%d", len(cfg.Buses), len(cfg.Transports))})
@@ -244,6 +245,13 @@ func decodeStrict(data []byte, target any) error {
 		return errors.New("unexpected trailing JSON content")
 	}
 	return nil
+}
+
+func normalizeConfigError(msg string) string {
+	if strings.Contains(msg, "unknown field") {
+		return "config parse error: unknown field"
+	}
+	return "config parse error"
 }
 
 func tempDBPath() (string, error) {
