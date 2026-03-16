@@ -18,6 +18,7 @@ use crate::{Attachment, Message, ThreadRef};
 use anyhow::anyhow;
 
 const TRANSPORT_NAME: &'static str = "IRC";
+const THREAD_EXCERPT_MAX_LEN: usize = 120;
 
 pub(crate) struct IRC {
     transport_id: usize,
@@ -274,6 +275,31 @@ impl IRC {
         if let Some(message) = message {
             let mut is_edit = is_edit;
 
+            if let Some(prefix) = self.outbound_thread_fallback_prefix(pipo_id, &thread).await {
+                let prefix_message = format!(
+                    "\x01ACTION \x02* \x02{}!\x02{}\x02 {}\x01",
+                    &transport[..1].to_uppercase(),
+                    username,
+                    prefix
+                );
+
+                if let Err(e) = self
+                    .send_privmsg_with_tags(
+                        client,
+                        channel,
+                        prefix_message.clone(),
+                        &thread,
+                        irc_message_id.as_deref(),
+                    )
+                    .await
+                {
+                    eprintln!(
+                        "Failed to send message '{}' channel {}: {:#}",
+                        prefix_message, channel, e
+                    );
+                }
+            }
+
             for msg in message.split("\n") {
                 if msg == "" {
                     continue;
@@ -389,6 +415,31 @@ impl IRC {
         }
         if let Some(message) = message {
             let mut is_edit = is_edit;
+
+            if let Some(prefix) = self.outbound_thread_fallback_prefix(pipo_id, &thread).await {
+                let prefix_message = format!(
+                    "\x01ACTION <{}!\x02{}\x02> {}\x01",
+                    &transport[..1].to_uppercase(),
+                    username,
+                    prefix
+                );
+
+                if let Err(e) = self
+                    .send_privmsg_with_tags(
+                        client,
+                        channel,
+                        prefix_message.clone(),
+                        &thread,
+                        irc_message_id.as_deref(),
+                    )
+                    .await
+                {
+                    eprintln!(
+                        "Failed to send message '{}' channel {}: {:#}",
+                        prefix_message, channel, e
+                    );
+                }
+            }
 
             for msg in message.split("\n") {
                 if msg == "" {
@@ -629,6 +680,77 @@ impl IRC {
         None
     }
 
+    async fn outbound_thread_fallback_prefix(
+        &self,
+        pipo_id: i64,
+        thread: &Option<ThreadRef>,
+    ) -> Option<String> {
+        let thread_ref = thread.as_ref()?;
+
+        if self.capabilities.supports_message_tags && self.capabilities.supports_reply_tags {
+            if self.resolve_irc_reply_target(thread).await.is_some() {
+                return None;
+            }
+        }
+
+        if self.is_thread_root_message(pipo_id, thread_ref).await {
+            return Some("[thread]".to_string());
+        }
+
+        let root_author = IRC::sanitize_thread_context_text(thread_ref.root_author.as_deref())
+            .filter(|author| !author.is_empty())
+            .unwrap_or_else(|| "unknown".to_string());
+        let root_excerpt = IRC::sanitize_thread_context_text(thread_ref.root_excerpt.as_deref())
+            .filter(|excerpt| !excerpt.is_empty())
+            .map(|excerpt| IRC::truncate_with_ellipsis(excerpt, THREAD_EXCERPT_MAX_LEN))
+            .unwrap_or_else(|| "…".to_string());
+
+        Some(format!("↪ reply to {}: {}", root_author, root_excerpt))
+    }
+
+    async fn is_thread_root_message(&self, pipo_id: i64, thread_ref: &ThreadRef) -> bool {
+        let Some(thread_root_id) = thread_ref.thread_root_id.as_deref() else {
+            return false;
+        };
+
+        if let Some(slackid) = self.select_slackid_from_messages(pipo_id).await {
+            if thread_root_id == slackid {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn sanitize_thread_context_text(value: Option<&str>) -> Option<String> {
+        let value = value?;
+        let collapsed = value
+            .chars()
+            .map(|ch| if ch.is_ascii_control() { ' ' } else { ch })
+            .collect::<String>();
+
+        let collapsed = collapsed
+            .split_whitespace()
+            .collect::<Vec<&str>>()
+            .join(" ");
+
+        if collapsed.is_empty() {
+            None
+        } else {
+            Some(collapsed)
+        }
+    }
+
+    fn truncate_with_ellipsis(input: String, max_len: usize) -> String {
+        let char_count = input.chars().count();
+        if char_count <= max_len {
+            return input;
+        }
+
+        let truncated: String = input.chars().take(max_len.saturating_sub(1)).collect();
+        format!("{}…", truncated)
+    }
+
     fn parse_message_id_tag(message: &IrcMessage) -> Option<String> {
         let tags = message.tags.as_ref()?;
 
@@ -845,6 +967,22 @@ impl IRC {
             Ok(conn.query_row(
                 "SELECT ircid FROM messages WHERE ircid = ?1",
                 params![ircid],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("Interact Error")))
+        .ok()
+        .flatten()
+    }
+
+    async fn select_slackid_from_messages(&self, pipo_id: i64) -> Option<String> {
+        let conn = self.pool.get().await.unwrap();
+
+        conn.interact(move |conn| -> anyhow::Result<Option<String>> {
+            Ok(conn.query_row(
+                "SELECT slackid FROM messages WHERE id = ?1",
+                params![pipo_id],
                 |row| row.get(0),
             )?)
         })
