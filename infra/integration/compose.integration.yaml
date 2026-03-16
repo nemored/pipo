@@ -1,0 +1,97 @@
+name: pipo-integration
+
+x-pipo-common: &pipo-common
+  working_dir: /workspace
+  restart: unless-stopped
+
+services:
+  pipo-go:
+    <<: *pipo-common
+    image: golang:1.22-bookworm
+    environment:
+      CONFIG_PATH: /etc/pipo/config.json
+      DB_PATH: /var/lib/pipo/pipo-go.sqlite3
+      HEALTH_ADDR: 0.0.0.0:8080
+    command: >-
+      sh -lc "go build -o /tmp/pipo-go ./cmd/pipo
+      && exec /tmp/pipo-go \"$CONFIG_PATH\" \"$DB_PATH\""
+    volumes:
+      - ../..:/workspace
+      - pipo-go-db:/var/lib/pipo
+      - pipo-go-config:/etc/pipo
+      - pipo-go-gomod:/go/pkg/mod
+      - pipo-go-cache:/root/.cache/go-build
+    ports:
+      - "18080:8080"
+
+  pipo-rust:
+    <<: *pipo-common
+    image: rust:1.73-bookworm
+    environment:
+      CONFIG_PATH: /etc/pipo/config.json
+      DB_PATH: /var/lib/pipo/pipo-rust.sqlite3
+    command: >-
+      sh -lc "cargo build --release --bin pipo
+      && exec ./target/release/pipo \"$CONFIG_PATH\" \"$DB_PATH\""
+    volumes:
+      - ../..:/workspace
+      - pipo-rust-db:/var/lib/pipo
+      - pipo-rust-config:/etc/pipo
+      - pipo-rust-cargo-registry:/usr/local/cargo/registry
+      - pipo-rust-cargo-git:/usr/local/cargo/git
+      - pipo-rust-target:/workspace/target
+
+  runner:
+    <<: *pipo-common
+    image: golang:1.22-bookworm
+    environment:
+      FIXTURE_PATH: docs/parity/fixtures/high-risk.json
+      ARTIFACT_DIR: /artifacts
+    command: >-
+      sh -lc "mkdir -p \"$ARTIFACT_DIR\"
+      && go run ./cmd/parity-harness -fixture \"$FIXTURE_PATH\"
+      | tee \"$ARTIFACT_DIR/parity.log\""
+    volumes:
+      - ../..:/workspace
+      - integration-artifacts:/artifacts
+      - runner-go-mod:/go/pkg/mod
+      - runner-go-cache:/root/.cache/go-build
+
+  irc:
+    image: ghcr.io/linuxserver/ngircd:latest
+    profiles: ["irc"]
+    environment:
+      TZ: UTC
+    ports:
+      - "16667:6667"
+
+  mumble:
+    image: mumblevoip/mumble-server:latest
+    profiles: ["mumble"]
+    environment:
+      MUMBLE_SUPERUSER_PASSWORD: supersecret
+    ports:
+      - "16473:64738/udp"
+      - "16473:64738/tcp"
+
+  rachni-mock:
+    image: ghcr.io/mccutchen/go-httpbin:v2.15.0
+    profiles: ["thirdparty"]
+    environment:
+      PORT: "8080"
+    ports:
+      - "18081:8080"
+
+volumes:
+  integration-artifacts:
+  pipo-go-db:
+  pipo-go-config:
+  pipo-go-gomod:
+  pipo-go-cache:
+  pipo-rust-db:
+  pipo-rust-config:
+  pipo-rust-cargo-registry:
+  pipo-rust-cargo-git:
+  pipo-rust-target:
+  runner-go-mod:
+  runner-go-cache:
