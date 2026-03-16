@@ -14,7 +14,7 @@ use rusqlite::params;
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, StreamMap};
 
-use crate::{Attachment, Message};
+use crate::{Attachment, Message, ThreadRef};
 use anyhow::anyhow;
 
 const TRANSPORT_NAME: &'static str = "IRC";
@@ -100,7 +100,7 @@ impl IRC {
                     match message {
                         Message::Action {
                         sender,
-                        pipo_id: _,
+                        pipo_id,
                         transport,
                         username,
                         avatar_url: _,
@@ -113,13 +113,14 @@ impl IRC {
                         if sender != self.transport_id {
                             self.handle_action_message(&client,
                                            &channel,
+                                           pipo_id,
                                            transport,
                                            username,
                                            thread,
                                            message,
                                            attachments,
                                            is_edit,
-                                           irc_flag);
+                                           irc_flag).await;
                         }
                         },
                         Message::Bot {
@@ -180,7 +181,7 @@ impl IRC {
                         },
                         Message::Text {
                         sender,
-                        pipo_id: _,
+                        pipo_id,
                         transport,
                         username,
                         avatar_url: _,
@@ -193,13 +194,14 @@ impl IRC {
                         if sender != self.transport_id {
                             self.handle_text_message(&client,
                                          &channel,
+                                         pipo_id,
                                          transport,
                                          username,
                                          thread,
                                          message,
                                          attachments,
                                          is_edit,
-                                         irc_flag);
+                                         irc_flag).await;
                         }
                         },
                     }
@@ -219,11 +221,14 @@ impl IRC {
                     };
                     self.update_capabilities_from_message(&message);
 
+                    let irc_message_id = IRC::parse_message_id_tag(&message);
+
                     if let Command::PRIVMSG(channel, message)
                         = message.command {
                         if let Err(e) = self.handle_priv_msg(nickname,
                                              channel,
-                                             message)
+                                             message,
+                                             irc_message_id)
                             .await {
                             eprintln!("Error handling PRIVMSG: {}",
                                   e);
@@ -233,7 +238,8 @@ impl IRC {
                         = message.command {
                         if let Err(e) = self.handle_notice(nickname,
                                            channel,
-                                           message)
+                                           message,
+                                           irc_message_id)
                             .await {
                             eprintln!("Error handling NOTICE: {}",
                                   e);
@@ -246,10 +252,11 @@ impl IRC {
         }
     }
 
-    fn handle_action_message(
+    async fn handle_action_message(
         &self,
         client: &Client,
         channel: &str,
+        pipo_id: i64,
         transport: String,
         username: String,
         thread: Option<crate::ThreadRef>,
@@ -258,6 +265,7 @@ impl IRC {
         is_edit: bool,
         irc_flag: bool,
     ) {
+        let irc_message_id = self.ensure_ircid_for_pipo_id(pipo_id).await;
         let mut message = message;
 
         if irc_flag && is_edit {
@@ -289,8 +297,15 @@ impl IRC {
                     )
                 };
 
-                if let Err(e) =
-                    self.send_privmsg_with_tags(client, channel, message.clone(), &thread)
+                if let Err(e) = self
+                    .send_privmsg_with_tags(
+                        client,
+                        channel,
+                        message.clone(),
+                        &thread,
+                        irc_message_id.as_deref(),
+                    )
+                    .await
                 {
                     eprintln!(
                         "Failed to send message '{}' channel {}: {:#}",
@@ -353,10 +368,11 @@ impl IRC {
         }
     }
 
-    fn handle_text_message(
+    async fn handle_text_message(
         &self,
         client: &Client,
         channel: &str,
+        pipo_id: i64,
         transport: String,
         username: String,
         thread: Option<crate::ThreadRef>,
@@ -365,6 +381,7 @@ impl IRC {
         is_edit: bool,
         irc_flag: bool,
     ) {
+        let irc_message_id = self.ensure_ircid_for_pipo_id(pipo_id).await;
         let mut message = message;
 
         if irc_flag && is_edit {
@@ -396,8 +413,15 @@ impl IRC {
                     )
                 };
 
-                if let Err(e) =
-                    self.send_privmsg_with_tags(client, channel, message.clone(), &thread)
+                if let Err(e) = self
+                    .send_privmsg_with_tags(
+                        client,
+                        channel,
+                        message.clone(),
+                        &thread,
+                        irc_message_id.as_deref(),
+                    )
+                    .await
                 {
                     eprintln!(
                         "Failed to send message '{}' channel {}: {:#}",
@@ -523,14 +547,15 @@ impl IRC {
         }
     }
 
-    fn send_privmsg_with_tags(
+    async fn send_privmsg_with_tags(
         &self,
         client: &Client,
         channel: &str,
         message: String,
         thread: &Option<crate::ThreadRef>,
+        irc_message_id: Option<&str>,
     ) -> irc::error::Result<()> {
-        let tags = self.tags_for_outbound_message(thread);
+        let tags = self.tags_for_outbound_message(thread, irc_message_id).await;
 
         if let Some(tags) = tags {
             return client.send(IrcMessage {
@@ -543,19 +568,77 @@ impl IRC {
         client.send_privmsg(channel, message)
     }
 
-    fn tags_for_outbound_message(&self, thread: &Option<crate::ThreadRef>) -> Option<Vec<Tag>> {
-        if !self.capabilities.supports_message_tags || !self.capabilities.supports_reply_tags {
+    async fn tags_for_outbound_message(
+        &self,
+        thread: &Option<crate::ThreadRef>,
+        irc_message_id: Option<&str>,
+    ) -> Option<Vec<Tag>> {
+        if !self.capabilities.supports_message_tags {
             return None;
         }
 
-        let reply_target = thread.as_ref().and_then(|thread_ref| {
-            thread_ref
-                .thread_root_id
-                .clone()
-                .or_else(|| thread_ref.reply_target_id.map(|id| id.to_string()))
-        })?;
+        let mut tags = Vec::new();
 
-        Some(vec![Tag("+draft/reply".to_string(), Some(reply_target))])
+        if let Some(irc_message_id) = irc_message_id {
+            tags.push(Tag(
+                "draft/msgid".to_string(),
+                Some(irc_message_id.to_string()),
+            ));
+        }
+
+        if !self.capabilities.supports_reply_tags {
+            return if tags.is_empty() { None } else { Some(tags) };
+        }
+
+        let reply_target = self.resolve_irc_reply_target(thread).await;
+
+        if let Some(reply_target) = reply_target {
+            tags.push(Tag("+draft/reply".to_string(), Some(reply_target)));
+        }
+
+        if tags.is_empty() {
+            None
+        } else {
+            Some(tags)
+        }
+    }
+
+    async fn resolve_irc_reply_target(&self, thread: &Option<ThreadRef>) -> Option<String> {
+        let thread_ref = thread.as_ref()?;
+
+        if let Some(thread_root_id) = thread_ref.thread_root_id.clone() {
+            if let Some(ircid) = self.select_ircid_by_slackid(thread_root_id.clone()).await {
+                return Some(ircid);
+            }
+            if let Some(ircid) = self.select_ircid_by_ircid(thread_root_id.clone()).await {
+                return Some(ircid);
+            }
+            if let Ok(id) = thread_root_id.parse::<i64>() {
+                if let Some(ircid) = self.select_ircid_from_messages(id).await {
+                    return Some(ircid);
+                }
+            }
+        }
+
+        if let Some(reply_target_id) = thread_ref.reply_target_id {
+            if let Some(ircid) = self.select_ircid_by_discordid(reply_target_id).await {
+                return Some(ircid);
+            }
+        }
+
+        None
+    }
+
+    fn parse_message_id_tag(message: &IrcMessage) -> Option<String> {
+        let tags = message.tags.as_ref()?;
+
+        tags.iter().find_map(|Tag(key, value)| {
+            if key == "msgid" || key == "+draft/msgid" {
+                value.clone()
+            } else {
+                None
+            }
+        })
     }
 
     async fn get_avatar_url(&self, nickname: &str) -> String {
@@ -581,12 +664,17 @@ impl IRC {
         nickname: String,
         channel: String,
         message: String,
+        irc_message_id: Option<String>,
     ) -> anyhow::Result<()> {
         if let Some(sender) = self.channels.get(&channel) {
             lazy_static! {
                 static ref RE: Regex = Regex::new("^\x01ACTION (.*)\x01\r?$").unwrap();
             }
             let pipo_id = self.insert_into_messages_table().await?;
+            if let Some(irc_message_id) = irc_message_id {
+                self.update_messages_ircid(pipo_id, Some(irc_message_id))
+                    .await?;
+            }
 
             let avatar_url = self.get_avatar_url(&nickname).await;
 
@@ -662,17 +750,126 @@ impl IRC {
         Ok(ret)
     }
 
+    fn generated_irc_message_id(pipo_id: i64) -> String {
+        format!("pipo-{}", pipo_id)
+    }
+
+    async fn ensure_ircid_for_pipo_id(&self, pipo_id: i64) -> Option<String> {
+        if let Some(ircid) = self.select_ircid_from_messages(pipo_id).await {
+            return Some(ircid);
+        }
+
+        let generated = IRC::generated_irc_message_id(pipo_id);
+        if self
+            .update_messages_ircid(pipo_id, Some(generated.clone()))
+            .await
+            .is_ok()
+        {
+            Some(generated)
+        } else {
+            None
+        }
+    }
+
+    async fn update_messages_ircid(
+        &self,
+        pipo_id: i64,
+        irc_message_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        let conn = self.pool.get().await.unwrap();
+
+        conn.interact(move |conn| -> anyhow::Result<usize> {
+            Ok(conn.execute(
+                "UPDATE messages SET ircid = ?2 WHERE id = ?1",
+                params![pipo_id, irc_message_id],
+            )?)
+        })
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("Interact Error")))?;
+
+        Ok(())
+    }
+
+    async fn select_ircid_from_messages(&self, pipo_id: i64) -> Option<String> {
+        let conn = self.pool.get().await.unwrap();
+
+        conn.interact(move |conn| -> anyhow::Result<Option<String>> {
+            Ok(conn.query_row(
+                "SELECT ircid FROM messages WHERE id = ?1",
+                params![pipo_id],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("Interact Error")))
+        .ok()
+        .flatten()
+    }
+
+    async fn select_ircid_by_slackid(&self, slackid: String) -> Option<String> {
+        let conn = self.pool.get().await.unwrap();
+
+        conn.interact(move |conn| -> anyhow::Result<Option<String>> {
+            Ok(conn.query_row(
+                "SELECT ircid FROM messages WHERE slackid = ?1",
+                params![slackid],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("Interact Error")))
+        .ok()
+        .flatten()
+    }
+
+    async fn select_ircid_by_discordid(&self, discordid: u64) -> Option<String> {
+        let conn = self.pool.get().await.unwrap();
+
+        conn.interact(move |conn| -> anyhow::Result<Option<String>> {
+            Ok(conn.query_row(
+                "SELECT ircid FROM messages WHERE discordid = ?1",
+                params![discordid],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("Interact Error")))
+        .ok()
+        .flatten()
+    }
+
+    async fn select_ircid_by_ircid(&self, ircid: String) -> Option<String> {
+        let conn = self.pool.get().await.unwrap();
+
+        conn.interact(move |conn| -> anyhow::Result<Option<String>> {
+            Ok(conn.query_row(
+                "SELECT ircid FROM messages WHERE ircid = ?1",
+                params![ircid],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("Interact Error")))
+        .ok()
+        .flatten()
+    }
+
     async fn handle_notice(
         &self,
         nickname: String,
         channel: String,
         message: String,
+        irc_message_id: Option<String>,
     ) -> anyhow::Result<()> {
         if let Some(sender) = self.channels.get(&channel) {
             lazy_static! {
                 static ref RE: Regex = Regex::new("^\x01ACTION (.*)\x01\r?$").unwrap();
             }
             let pipo_id = self.insert_into_messages_table().await?;
+            if let Some(irc_message_id) = irc_message_id {
+                self.update_messages_ircid(pipo_id, Some(irc_message_id))
+                    .await?;
+            }
 
             let avatar_url = self.get_avatar_url(&nickname).await;
 
