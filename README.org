@@ -45,10 +45,13 @@ config/event corpus, then compare normalized outputs + DB side effects.
 
 #+BEGIN_SRC bash
 go run ./cmd/parity-harness -fixture docs/parity/fixtures/high-risk.json
+
+# Integration-mode scenarios with per-scenario pass/fail + divergences
+go run ./cmd/parity-harness -mode integration -fixture docs/parity/fixtures/integration.json
 #+END_SRC
 
 This currently focuses on Slack↔Discord ID mapping, edits/deletes, thread
-fields, and reaction routing.
+fields, reaction routing, and integration-driver scenario comparisons.
 
 ** Tasks
 *** TODO Improve translation of Slack formatting to Markdown formatting

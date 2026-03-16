@@ -1,0 +1,14 @@
+{
+  "scenarios": [
+    {
+      "name": "local-slack-discord-routing",
+      "config_json": "{\n  \"buses\": [{\"id\":\"main\"}],\n  \"transports\": [\n    {\"transport\":\"Slack\",\"token\":\"x\",\"bot_token\":\"y\",\"channel_mapping\":{\"main\":\"C1\"}},\n    {\"transport\":\"Discord\",\"token\":\"z\",\"guild_id\":1,\"channel_mapping\":{\"main\":\"10\"}}\n  ]\n}",
+      "actions": [
+        {"driver": "local", "op": "insert_slack", "slack_id": "1700000000.100"},
+        {"driver": "local", "op": "update_discord", "pipo_id": 1, "discord_id": 9911223344},
+        {"driver": "local", "op": "route_reaction_slack", "slack_id": "1700000000.100", "emoji": "thumbsup", "remove": false, "thread_slack_ts": "1700000000.100"},
+        {"driver": "local", "op": "lookup_discord_by_slack", "slack_id": "1700000000.100"}
+      ]
+    }
+  ]
+}
