@@ -28,7 +28,7 @@ defmodule PipoSupervisor.Supervisor do
           %{
             id: {:port_worker, worker_id},
             start: {PipoSupervisor.PortWorker, :start_link, [merged_worker_opts]},
-            restart: :permanent,
+            restart: :transient,
             shutdown: 2_000,
             type: :worker
           }
