@@ -344,7 +344,6 @@ defmodule PipoSupervisor.ChaosTest do
     assert_receive {:delivered, ^observer_worker, %{"payload" => %{"seq" => 2}}}, 500
   end
 
-
   test "worker exit status 0 does not stop with auth_failure" do
     transport = write_transport!("exit0_transport.sh", transport_exit_script(0))
 
@@ -381,7 +380,12 @@ defmodule PipoSupervisor.ChaosTest do
          max_restarts: 100,
          max_seconds: 1,
          router: [name: unique_name(:chaos_router_exit12)],
-         port_worker: [transport_path: transport, backoff_ms: 0, jitter_ms: 1, ready_timeout_ms: 50]}
+         port_worker: [
+           transport_path: transport,
+           backoff_ms: 0,
+           jitter_ms: 1,
+           ready_timeout_ms: 50
+         ]}
       )
 
     first = wait_for_worker(:flaky)
@@ -407,7 +411,12 @@ defmodule PipoSupervisor.ChaosTest do
          max_restarts: 100,
          max_seconds: 1,
          router: [name: unique_name(:chaos_router_exit10)],
-         port_worker: [transport_path: transport, backoff_ms: 0, jitter_ms: 1, ready_timeout_ms: 50]}
+         port_worker: [
+           transport_path: transport,
+           backoff_ms: 0,
+           jitter_ms: 1,
+           ready_timeout_ms: 50
+         ]}
       )
 
     first = wait_for_worker(:auth_fail)
@@ -456,7 +465,6 @@ while IFS= read -r _line; do
 done
 "
   end
-
 
   defp transport_exit_script(status) do
     "#!/bin/sh

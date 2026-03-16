@@ -64,8 +64,9 @@ defmodule PipoSupervisor.ProtocolWireTest do
     assert Port.info(port) != nil
   end
 
-
-  test "startup auth failure exits with status 10 and does not restart", %{transport_bin: transport_bin} do
+  test "startup auth failure exits with status 10 and does not restart", %{
+    transport_bin: transport_bin
+  } do
     {port, config_path} = open_transport_port(transport_bin, %{"startup_failure" => "auth"})
 
     on_exit(fn ->
