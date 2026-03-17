@@ -196,7 +196,7 @@ func (s *SQLiteStore) SelectIDBySlack(ctx context.Context, slackID string) (*int
 
 func (s *SQLiteStore) SelectSlackByID(ctx context.Context, pipoID int64) (*string, error) {
 	const q = `SELECT slackid FROM messages WHERE id = ?1`
-	var id string
+	var id sql.NullString
 	err := s.db.QueryRowContext(ctx, q, pipoID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -205,12 +205,15 @@ func (s *SQLiteStore) SelectSlackByID(ctx context.Context, pipoID int64) (*strin
 		observeDBError("select_slack_by_id", err)
 		return nil, err
 	}
-	return &id, nil
+	if !id.Valid {
+		return nil, nil
+	}
+	return &id.String, nil
 }
 
 func (s *SQLiteStore) SelectSlackByDiscord(ctx context.Context, discordID uint64) (*string, error) {
 	const q = `SELECT slackid FROM messages WHERE discordid = ?1`
-	var id string
+	var id sql.NullString
 	err := s.db.QueryRowContext(ctx, q, discordID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -219,7 +222,10 @@ func (s *SQLiteStore) SelectSlackByDiscord(ctx context.Context, discordID uint64
 		observeDBError("select_slack_by_discord", err)
 		return nil, err
 	}
-	return &id, nil
+	if !id.Valid {
+		return nil, nil
+	}
+	return &id.String, nil
 }
 
 func (s *SQLiteStore) SelectDiscordBySlack(ctx context.Context, slackID string) (*uint64, error) {
