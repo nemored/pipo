@@ -25,8 +25,13 @@ use tokio_tungstenite::*;
 
 use crate::Message;
 
+mod entity_resolver;
 pub mod objects;
 mod rich_text_renderer;
+use entity_resolver::{
+    format_broadcast, format_channel, format_link, format_team, format_user, format_usergroup,
+    parse_entity_reference, EntityReference,
+};
 use objects::{Message as SlackMessage, *};
 use rich_text_renderer::{RenderOptions, RichTextResolver};
 //mod parse;
@@ -46,6 +51,7 @@ pub(crate) struct Slack {
     channel_map: HashMap<String, String>,
     id_map: HashMap<String, String>,
     users: HashMap<String, User>,
+    user_id_map: HashMap<String, String>,
     seen_event_ids: VecDeque<String>,
     irc_formatting_enabled: bool,
 }
@@ -97,6 +103,7 @@ impl Slack {
             channel_map: HashMap::new(),
             id_map: HashMap::new(),
             users: HashMap::new(),
+            user_id_map: HashMap::new(),
             seen_event_ids: VecDeque::with_capacity(50),
             irc_formatting_enabled,
         })
@@ -1094,55 +1101,73 @@ impl Slack {
     }
 
     async fn get_user_display_name(&mut self, user: Option<String>) -> anyhow::Result<String> {
-        let display_name = match user {
-            Some(user) => {
-                let mut headers = HeaderMap::new();
-
-                headers.insert(
-                    header::CONTENT_TYPE,
-                    "application/x-www-form-urlencoded".parse()?,
-                );
-                headers.insert(
-                    header::AUTHORIZATION,
-                    ("Bearer ".to_owned() + &self.bot_token).parse()?,
-                );
-
-                let url = reqwest::Url::parse_with_params(
-                    "https://slack.com/api/users.profile.get",
-                    &[("user", user.as_str())],
-                )?;
-
-                let response = self
-                    .http
-                    .request(Method::GET, url)
-                    .headers(headers)
-                    .send()
-                    .await?;
-                let json: Value = serde_json::from_str(response.text().await?.as_str())?;
-                if json["ok"] == false {
-                    return Err(anyhow!("get_user_display_name() {:?}", json));
-                }
-
-                match json["profile"].get("display_name").unwrap().as_str() {
-                    Some("") => json["profile"]
-                        .get("real_name")
-                        .unwrap()
-                        .as_str()
-                        .unwrap()
-                        .to_string(),
-                    Some(s) => s.to_string(),
-                    None => json["profile"]
-                        .get("real_name")
-                        .unwrap()
-                        .as_str()
-                        .unwrap()
-                        .to_string(),
-                }
-            }
-            None => "".to_string(),
+        let Some(user_id) = user else {
+            return Ok(String::new());
         };
 
-        Ok(display_name.to_string())
+        if let Some(name) = self.user_id_map.get(&user_id) {
+            return Ok(name.clone());
+        }
+
+        for user in self.users.values() {
+            if user.id.as_deref() == Some(user_id.as_str()) {
+                if let Some(name) = user
+                    .profile
+                    .as_ref()
+                    .and_then(|profile| profile.display_name.as_ref())
+                    .filter(|name| !name.is_empty())
+                    .cloned()
+                    .or_else(|| user.real_name.clone())
+                    .or_else(|| user.name.clone())
+                {
+                    self.user_id_map.insert(user_id.clone(), name.clone());
+                    return Ok(name);
+                }
+            }
+        }
+
+        let mut headers = HeaderMap::new();
+
+        headers.insert(
+            header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse()?,
+        );
+        headers.insert(
+            header::AUTHORIZATION,
+            ("Bearer ".to_owned() + &self.bot_token).parse()?,
+        );
+
+        let response = self
+            .http
+            .request(Method::GET, "https://slack.com/api/users.profile.get")
+            .query(&[("user", user_id.clone())])
+            .headers(headers)
+            .send()
+            .await?;
+        let json: Value = serde_json::from_str(response.text().await?.as_str())?;
+        if json["ok"] == false {
+            return Err(anyhow!("get_user_display_name() {:?}", json));
+        }
+
+        let display_name = match json["profile"].get("display_name").unwrap().as_str() {
+            Some("") => json["profile"]
+                .get("real_name")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string(),
+            Some(s) => s.to_string(),
+            None => json["profile"]
+                .get("real_name")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string(),
+        };
+
+        self.user_id_map.insert(user_id, display_name.clone());
+
+        Ok(display_name)
     }
 
     async fn get_users_list(&mut self) -> anyhow::Result<()> {
@@ -1180,6 +1205,20 @@ impl Slack {
 
             if let Some(members) = users_list.members {
                 for user in members {
+                    if let Some(id) = user.id.clone() {
+                        if let Some(display_name) = user
+                            .profile
+                            .as_ref()
+                            .and_then(|profile| profile.display_name.as_ref())
+                            .filter(|name| !name.is_empty())
+                            .cloned()
+                            .or_else(|| user.real_name.clone())
+                            .or_else(|| user.name.clone())
+                        {
+                            self.user_id_map.insert(id, display_name);
+                        }
+                    }
+
                     if let Some(ref name) = user.name {
                         self.users.insert(name.to_string(), user);
                     } else if let Some(ref name) = user.real_name {
@@ -2334,29 +2373,48 @@ impl Slack {
 
     async fn parse_usernames(&mut self, text: &str) -> anyhow::Result<String> {
         lazy_static! {
-            static ref RE: Regex = Regex::new("<(@[A-Z0-9]+)\\|*([^>]*)>").unwrap();
+            static ref ENTITY_RE: Regex = Regex::new("<([^>]+)>").unwrap();
         }
 
-        let mut name_map = HashMap::new();
+        let mut output = String::with_capacity(text.len());
+        let mut last = 0;
 
-        for captures in RE.captures_iter(text) {
-            let user = captures.get(1).unwrap().as_str();
-            if let Some(name) = captures.get(2) {
-                name_map.insert(user, name.as_str().to_string());
-            } else {
-                let name = self.get_user_display_name(Some(user.to_string())).await?;
-                name_map.insert(user, name);
-            }
+        for captures in ENTITY_RE.captures_iter(text) {
+            let full = captures.get(0).unwrap();
+            let inner = captures.get(1).unwrap().as_str();
+
+            output.push_str(&text[last..full.start()]);
+            last = full.end();
+
+            let replacement = match parse_entity_reference(inner) {
+                EntityReference::User { id, label } => {
+                    let label = match label.filter(|label| !label.is_empty()) {
+                        Some(label) => Some(label),
+                        None => self.get_user_display_name(Some(id.clone())).await.ok(),
+                    };
+                    format_user(label.as_deref(), &id)
+                }
+                EntityReference::Channel { id, label } => {
+                    let channel_name = label.or_else(|| self.id_map.get(&id).cloned());
+                    format_channel(channel_name.as_deref(), &id)
+                }
+                EntityReference::Team { id, label } => {
+                    format_team(label.as_deref().filter(|label| !label.is_empty()), &id)
+                }
+                EntityReference::Usergroup { id, label } => {
+                    format_usergroup(label.as_deref().filter(|label| !label.is_empty()), &id)
+                }
+                EntityReference::Broadcast { range, .. } => format_broadcast(&range),
+                EntityReference::Link { url, label } => format_link(&url, label.as_deref()),
+                EntityReference::Unknown { raw } => format!("<{raw}>"),
+            };
+
+            output.push_str(&replacement);
         }
 
-        Ok(RE
-            .replace_all(&text, |captures: &Captures| -> String {
-                format!(
-                    "@{}",
-                    name_map.get(captures.get(1).unwrap().as_str()).unwrap()
-                )
-            })
-            .to_string())
+        output.push_str(&text[last..]);
+
+        Ok(output)
     }
 
     async fn get_message(&self, channel: &str, ts: &Timestamp) -> anyhow::Result<SlackMessage> {

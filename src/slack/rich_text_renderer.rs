@@ -2,7 +2,12 @@ use anyhow::Result;
 use async_recursion::async_recursion;
 use serenity::async_trait;
 
-use super::objects::{Element, Style};
+use super::{
+    entity_resolver::{
+        format_broadcast, format_channel, format_link, format_team, format_user, format_usergroup,
+    },
+    objects::{Element, Style},
+};
 
 const IRC_BOLD: char = '\u{0002}';
 const IRC_ITALIC: char = '\u{001d}';
@@ -332,24 +337,22 @@ where
             let body = render_children(resolver, children, raw_options).await?;
             Ok(format!("```\n{}\n```", sanitize_irc_conflicts(&body)))
         }
-        RichTextNode::Mention(Mention::User(user_id)) => Ok(format!(
-            "@{}",
-            resolver.resolve_user_display_name(user_id).await?
-        )),
+        RichTextNode::Mention(Mention::User(user_id)) => {
+            let user_name = resolver.resolve_user_display_name(user_id).await.ok();
+            Ok(format_user(user_name.as_deref(), user_id))
+        }
         RichTextNode::Mention(Mention::Channel(channel_id)) => {
-            let channel = resolver
-                .resolve_channel_name(channel_id)
-                .unwrap_or_else(|| "Unknown".to_string());
-            Ok(format!("#{}", channel))
+            let channel_name = resolver.resolve_channel_name(channel_id);
+            Ok(format_channel(channel_name.as_deref(), channel_id))
         }
-        RichTextNode::Mention(Mention::Broadcast(range)) => Ok(format!("<!{}>", range)),
-        RichTextNode::Mention(Mention::Team(team_id)) => Ok(format!("<!team^{}>", team_id)),
+        RichTextNode::Mention(Mention::Broadcast(range)) => Ok(format_broadcast(range)),
+        RichTextNode::Mention(Mention::Team(team_id)) => Ok(format_team(None, team_id)),
         RichTextNode::Mention(Mention::Usergroup(usergroup_id)) => {
-            Ok(format!("<!subteam^{}>", usergroup_id))
+            Ok(format_usergroup(None, usergroup_id))
         }
-        RichTextNode::Link { url, text } => Ok(sanitize_irc_conflicts(
-            &text.clone().unwrap_or_else(|| url.clone()),
-        )),
+        RichTextNode::Link { url, text } => {
+            Ok(sanitize_irc_conflicts(&format_link(url, text.as_deref())))
+        }
         RichTextNode::Emoji(name) => Ok(format!(":{}:", name)),
         RichTextNode::Date(fallback) => Ok(sanitize_irc_conflicts(fallback)),
         RichTextNode::Unsupported(desc) => Ok(format!("[{}]", sanitize_irc_conflicts(desc))),
@@ -565,6 +568,57 @@ mod tests {
         assert_eq!(rendered, " hi ");
     }
 
+    #[tokio::test]
+    async fn renders_link_label_with_url() {
+        let element = Element::Link {
+            url: "https://example.com".to_string(),
+            text: Some("Example".to_string()),
+            style: None,
+        };
+
+        let mut resolver = TestResolver;
+        let rendered = render(&mut resolver, &element, RenderOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(rendered, "Example (https://example.com)");
+    }
+
+    #[tokio::test]
+    async fn renders_unknown_mentions_deterministically() {
+        struct UnknownResolver;
+
+        #[async_trait]
+        impl RichTextResolver for UnknownResolver {
+            async fn resolve_user_display_name(&mut self, _user_id: &str) -> Result<String> {
+                Err(anyhow::anyhow!("not found"))
+            }
+
+            fn resolve_channel_name(&self, _channel_id: &str) -> Option<String> {
+                None
+            }
+        }
+
+        let element = Element::RichTextSection {
+            elements: vec![
+                Element::User {
+                    user_id: "U404".to_string(),
+                },
+                Element::Text {
+                    text: " ".to_string(),
+                    style: None,
+                },
+                Element::Channel {
+                    channel_id: "C404".to_string(),
+                },
+            ],
+        };
+
+        let mut resolver = UnknownResolver;
+        let rendered = render(&mut resolver, &element, RenderOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(rendered, "@unknown-user:U404 #unknown-channel:C404");
+    }
     #[tokio::test]
     async fn renders_nested_layouts_with_golden_fixtures() {
         let list_in_quote = Element::RichTextQuote {
