@@ -19,6 +19,7 @@ use reqwest::{
 };
 use rusqlite::params;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::{net::TcpStream, sync::broadcast};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt, StreamMap};
 use tokio_tungstenite::*;
@@ -1293,12 +1294,30 @@ impl Slack {
             } => {
                 self.acknowledge(&envelope_id).await?;
 
-                if retry_attempt > 0 {
-                    let event_id = match &payload {
-                        EventPayload::EventCallback { event_id, .. } => Some(event_id.clone()),
-                        EventPayload::UrlVerification { .. } => None,
-                    };
+                let event_id = match &payload {
+                    EventPayload::EventCallback { event_id, .. } => Some(event_id.clone()),
+                    EventPayload::UrlVerification { .. } => None,
+                };
 
+                let is_duplicate = retry_attempt > 0
+                    && event_id
+                        .as_ref()
+                        .is_some_and(|id| self.seen_event_ids.contains(id));
+
+                if let Err(error) = self
+                    .log_inbound_event_payload(
+                        &envelope_id,
+                        event_id.as_deref(),
+                        retry_attempt,
+                        &payload,
+                        is_duplicate,
+                    )
+                    .await
+                {
+                    eprintln!("Failed to log Slack inbound payload: {error}");
+                }
+
+                if retry_attempt > 0 {
                     if let Some(event_id) = event_id {
                         if self.seen_event_ids.contains(&event_id) {
                             return Ok(());
@@ -1329,6 +1348,151 @@ impl Slack {
                     .await
             }
             Response::Unhandled { error } => Err(anyhow!("Unhandled response type: {}", error)),
+        }
+    }
+
+    async fn log_inbound_event_payload(
+        &self,
+        envelope_id: &str,
+        event_id: Option<&str>,
+        retry_attempt: u64,
+        payload: &EventPayload,
+        is_duplicate: bool,
+    ) -> anyhow::Result<()> {
+        let envelope_id = envelope_id.to_string();
+        let event_id = event_id.map(str::to_string);
+        let payload_json = serde_json::to_string(payload)?;
+        let payload_hash = format!("{:x}", Sha256::digest(payload_json.as_bytes()));
+        let (event_type, channel_id, user_id, ts, thread_ts) =
+            Self::event_payload_metadata(payload);
+
+        self.pool
+            .get()
+            .await?
+            .interact(move |conn| {
+                conn.execute(
+                    "INSERT INTO slack_event_log (
+                        received_at,
+                        envelope_id,
+                        event_id,
+                        retry_attempt,
+                        event_type,
+                        channel_id,
+                        user_id,
+                        ts,
+                        thread_ts,
+                        payload_json,
+                        payload_hash,
+                        is_duplicate
+                    ) VALUES (
+                        strftime('%Y-%m-%d %H:%M:%f', 'now'),
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?
+                    )",
+                    params![
+                        envelope_id,
+                        event_id,
+                        retry_attempt as i64,
+                        event_type,
+                        channel_id,
+                        user_id,
+                        ts,
+                        thread_ts,
+                        payload_json,
+                        payload_hash,
+                        is_duplicate as i64,
+                    ],
+                )
+            })
+            .await
+            .map_err(|e| anyhow!("interact error: {e}"))??;
+
+        Ok(())
+    }
+
+    fn event_payload_metadata(
+        payload: &EventPayload,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) {
+        match payload {
+            EventPayload::EventCallback {
+                event, event_id: _, ..
+            } => Self::event_metadata(event),
+            EventPayload::UrlVerification { .. } => {
+                (Some("url_verification".to_string()), None, None, None, None)
+            }
+        }
+    }
+
+    fn event_metadata(
+        event: &Event,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) {
+        match event {
+            Event::Message(message) => (
+                Some("message".to_string()),
+                message.channel.clone(),
+                message.user.clone(),
+                message.ts.clone(),
+                message.thread_ts.clone(),
+            ),
+            Event::PinAdded {
+                channel_id,
+                user,
+                event_ts,
+                ..
+            } => (
+                Some("pin_added".to_string()),
+                Some(channel_id.clone()),
+                user.clone(),
+                Some(event_ts.clone()),
+                None,
+            ),
+            Event::PinRemoved {
+                channel_id,
+                user,
+                event_ts,
+                ..
+            } => (
+                Some("pin_removed".to_string()),
+                Some(channel_id.clone()),
+                user.clone(),
+                Some(event_ts.clone()),
+                None,
+            ),
+            Event::ReactionAdded { user, event_ts, .. } => (
+                Some("reaction_added".to_string()),
+                None,
+                user.clone(),
+                Some(event_ts.0.clone()),
+                None,
+            ),
+            Event::ReactionRemoved { user, event_ts, .. } => (
+                Some("reaction_removed".to_string()),
+                None,
+                user.clone(),
+                Some(event_ts.0.clone()),
+                None,
+            ),
         }
     }
 
