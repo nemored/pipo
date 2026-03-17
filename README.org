@@ -57,3 +57,9 @@ Migration behavior:
 - If new fields are omitted, defaults are applied (=thread_fallback_style= → =compact=, =thread_context_repeat= → =first_seen=).
 - =first_seen= gives one richer intro line per thread token/channel, then shifts to concise token-only context to reduce noise.
 - Set =verbose +=always= to approximate the prior always-expanded fallback behavior.
+
+IRC user commands for thread replies:
+- =/threads=: shows a bounded list of recent active thread tokens for the current channel (latest 8), with short root summaries.
+- =/threadhelp= (and =/help=): shows reply syntax examples.
+- Reply syntax: =>>TOKEN message= or =/reply TOKEN message=.
+- First-seen fallback context in =first_seen= mode includes a one-time hint like =reply with: >>K7F2 <message>=.
