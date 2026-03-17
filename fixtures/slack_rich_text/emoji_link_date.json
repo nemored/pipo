@@ -1,0 +1,15 @@
+{
+  "type": "rich_text_section",
+  "elements": [
+    { "type": "emoji", "name": "wave" },
+    { "type": "text", "text": " " },
+    { "type": "link", "url": "https://example.com", "text": "Example" },
+    { "type": "text", "text": " " },
+    {
+      "type": "date",
+      "timestamp": 1704067200,
+      "format": "{date_num}",
+      "fallback": "2024-01-01"
+    }
+  ]
+}

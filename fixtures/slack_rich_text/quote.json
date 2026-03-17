@@ -1,0 +1,11 @@
+{
+  "type": "rich_text_quote",
+  "elements": [
+    {
+      "type": "rich_text_section",
+      "elements": [
+        { "type": "text", "text": "q1\nq2" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "type": "rich_text_list",
+  "style": "ordered",
+  "indent": 0,
+  "elements": [
+    {
+      "type": "rich_text_section",
+      "elements": [
+        { "type": "text", "text": "item" },
+        { "type": "text", "text": "\n" },
+        {
+          "type": "rich_text_quote",
+          "elements": [
+            {
+              "type": "rich_text_section",
+              "elements": [
+                { "type": "text", "text": "q1" },
+                { "type": "text", "text": "\nq2" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

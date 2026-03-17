@@ -1,0 +1,11 @@
+{
+  "type": "rich_text_preformatted",
+  "elements": [
+    {
+      "type": "rich_text_section",
+      "elements": [
+        { "type": "text", "text": "echo hi\necho bye" }
+      ]
+    }
+  ]
+}

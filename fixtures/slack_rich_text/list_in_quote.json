@@ -1,0 +1,21 @@
+{
+  "type": "rich_text_quote",
+  "elements": [
+    {
+      "type": "rich_text_section",
+      "elements": [
+        { "type": "text", "text": "before" },
+        { "type": "text", "text": "\n" },
+        {
+          "type": "rich_text_list",
+          "style": "bullet",
+          "indent": 0,
+          "elements": [
+            { "type": "rich_text_section", "elements": [{ "type": "text", "text": "alpha" }] },
+            { "type": "rich_text_section", "elements": [{ "type": "text", "text": "beta" }] }
+          ]
+        }
+      ]
+    }
+  ]
+}

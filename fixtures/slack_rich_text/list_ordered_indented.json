@@ -1,0 +1,8 @@
+{
+  "type": "rich_text_list",
+  "style": "ordered",
+  "indent": 1,
+  "elements": [
+    { "type": "rich_text_section", "elements": [{ "type": "text", "text": "first" }] }
+  ]
+}
