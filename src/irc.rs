@@ -11,6 +11,7 @@ use irc::{
 use lazy_static::lazy_static;
 use regex::Regex;
 use rusqlite::params;
+use serde::Deserialize;
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, StreamMap};
 
@@ -18,7 +19,23 @@ use crate::{Attachment, Message, ThreadRef};
 use anyhow::anyhow;
 
 const TRANSPORT_NAME: &'static str = "IRC";
-const THREAD_EXCERPT_MAX_LEN: usize = 120;
+const DEFAULT_THREAD_EXCERPT_LEN: usize = 120;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ThreadPresentationMode {
+    #[default]
+    Auto,
+    Ircv3Only,
+    PlaintextOnly,
+}
+
+#[derive(Debug)]
+struct ThreadPresentation {
+    reply_target: Option<String>,
+    plaintext_prefix: Option<String>,
+    mode_used: &'static str,
+}
 
 pub(crate) struct IRC {
     transport_id: usize,
@@ -28,6 +45,9 @@ pub(crate) struct IRC {
     pool: Pool,
     pipo_id: Arc<Mutex<i64>>,
     capabilities: IrcCapabilityState,
+    thread_presentation_mode: ThreadPresentationMode,
+    thread_excerpt_len: usize,
+    show_thread_root_marker: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -46,6 +66,9 @@ impl IRC {
         use_tls: bool,
         img_root: &str,
         channel_mapping: &HashMap<Arc<String>, Arc<String>>,
+        thread_presentation_mode: ThreadPresentationMode,
+        thread_excerpt_len: usize,
+        show_thread_root_marker: bool,
         transport_id: usize,
     ) -> anyhow::Result<IRC> {
         let channels = channel_mapping
@@ -85,6 +108,13 @@ impl IRC {
             pool,
             pipo_id,
             capabilities: IrcCapabilityState::default(),
+            thread_presentation_mode,
+            thread_excerpt_len: if thread_excerpt_len == 0 {
+                DEFAULT_THREAD_EXCERPT_LEN
+            } else {
+                thread_excerpt_len
+            },
+            show_thread_root_marker,
         })
     }
 
@@ -274,8 +304,13 @@ impl IRC {
         }
         if let Some(message) = message {
             let mut is_edit = is_edit;
+            let thread_presentation = self.resolve_thread_presentation(pipo_id, &thread).await;
 
-            if let Some(prefix) = self.outbound_thread_fallback_prefix(pipo_id, &thread).await {
+            if thread.is_some() {
+                self.log_thread_presentation(channel, pipo_id, &thread_presentation);
+            }
+
+            if let Some(prefix) = thread_presentation.plaintext_prefix.as_ref() {
                 let prefix_message = format!(
                     "\x01ACTION \x02* \x02{}!\x02{}\x02 {}\x01",
                     &transport[..1].to_uppercase(),
@@ -288,7 +323,7 @@ impl IRC {
                         client,
                         channel,
                         prefix_message.clone(),
-                        &thread,
+                        thread_presentation.reply_target.as_deref(),
                         irc_message_id.as_deref(),
                     )
                     .await
@@ -328,7 +363,7 @@ impl IRC {
                         client,
                         channel,
                         message.clone(),
-                        &thread,
+                        thread_presentation.reply_target.as_deref(),
                         irc_message_id.as_deref(),
                     )
                     .await
@@ -415,8 +450,13 @@ impl IRC {
         }
         if let Some(message) = message {
             let mut is_edit = is_edit;
+            let thread_presentation = self.resolve_thread_presentation(pipo_id, &thread).await;
 
-            if let Some(prefix) = self.outbound_thread_fallback_prefix(pipo_id, &thread).await {
+            if thread.is_some() {
+                self.log_thread_presentation(channel, pipo_id, &thread_presentation);
+            }
+
+            if let Some(prefix) = thread_presentation.plaintext_prefix.as_ref() {
                 let prefix_message = format!(
                     "\x01ACTION <{}!\x02{}\x02> {}\x01",
                     &transport[..1].to_uppercase(),
@@ -429,7 +469,7 @@ impl IRC {
                         client,
                         channel,
                         prefix_message.clone(),
-                        &thread,
+                        thread_presentation.reply_target.as_deref(),
                         irc_message_id.as_deref(),
                     )
                     .await
@@ -469,7 +509,7 @@ impl IRC {
                         client,
                         channel,
                         message.clone(),
-                        &thread,
+                        thread_presentation.reply_target.as_deref(),
                         irc_message_id.as_deref(),
                     )
                     .await
@@ -603,10 +643,10 @@ impl IRC {
         client: &Client,
         channel: &str,
         message: String,
-        thread: &Option<crate::ThreadRef>,
+        reply_target: Option<&str>,
         irc_message_id: Option<&str>,
     ) -> irc::error::Result<()> {
-        let tags = self.tags_for_outbound_message(thread, irc_message_id).await;
+        let tags = self.tags_for_outbound_message(reply_target, irc_message_id);
 
         if let Some(tags) = tags {
             return client.send(IrcMessage {
@@ -619,9 +659,9 @@ impl IRC {
         client.send_privmsg(channel, message)
     }
 
-    async fn tags_for_outbound_message(
+    fn tags_for_outbound_message(
         &self,
-        thread: &Option<crate::ThreadRef>,
+        reply_target: Option<&str>,
         irc_message_id: Option<&str>,
     ) -> Option<Vec<Tag>> {
         if !self.capabilities.supports_message_tags {
@@ -641,10 +681,11 @@ impl IRC {
             return if tags.is_empty() { None } else { Some(tags) };
         }
 
-        let reply_target = self.resolve_irc_reply_target(thread).await;
-
         if let Some(reply_target) = reply_target {
-            tags.push(Tag("+draft/reply".to_string(), Some(reply_target)));
+            tags.push(Tag(
+                "+draft/reply".to_string(),
+                Some(reply_target.to_string()),
+            ));
         }
 
         if tags.is_empty() {
@@ -652,6 +693,84 @@ impl IRC {
         } else {
             Some(tags)
         }
+    }
+
+    async fn resolve_thread_presentation(
+        &self,
+        pipo_id: i64,
+        thread: &Option<ThreadRef>,
+    ) -> ThreadPresentation {
+        if thread.is_none() {
+            return ThreadPresentation {
+                reply_target: None,
+                plaintext_prefix: None,
+                mode_used: "none",
+            };
+        }
+
+        let can_use_reply_tags = self.capabilities.supports_message_tags
+            && self.capabilities.supports_reply_tags
+            && !matches!(
+                self.thread_presentation_mode,
+                ThreadPresentationMode::PlaintextOnly
+            );
+        let reply_target = if can_use_reply_tags {
+            self.resolve_irc_reply_target(thread).await
+        } else {
+            None
+        };
+
+        match self.thread_presentation_mode {
+            ThreadPresentationMode::Auto => {
+                if reply_target.is_some() {
+                    ThreadPresentation {
+                        reply_target,
+                        plaintext_prefix: None,
+                        mode_used: "ircv3_tag",
+                    }
+                } else {
+                    ThreadPresentation {
+                        reply_target: None,
+                        plaintext_prefix: self
+                            .outbound_thread_fallback_prefix(pipo_id, thread)
+                            .await,
+                        mode_used: "plaintext_fallback",
+                    }
+                }
+            }
+            ThreadPresentationMode::Ircv3Only => {
+                if reply_target.is_some() {
+                    ThreadPresentation {
+                        reply_target,
+                        plaintext_prefix: None,
+                        mode_used: "ircv3_tag",
+                    }
+                } else {
+                    ThreadPresentation {
+                        reply_target: None,
+                        plaintext_prefix: None,
+                        mode_used: "ircv3_unavailable",
+                    }
+                }
+            }
+            ThreadPresentationMode::PlaintextOnly => ThreadPresentation {
+                reply_target: None,
+                plaintext_prefix: self.outbound_thread_fallback_prefix(pipo_id, thread).await,
+                mode_used: "plaintext_fallback",
+            },
+        }
+    }
+
+    fn log_thread_presentation(
+        &self,
+        channel: &str,
+        pipo_id: i64,
+        thread_presentation: &ThreadPresentation,
+    ) {
+        eprintln!(
+            "IRC threaded message routing: transport_id={} channel={} pipo_id={} mode={}",
+            self.transport_id, channel, pipo_id, thread_presentation.mode_used
+        );
     }
 
     async fn resolve_irc_reply_target(&self, thread: &Option<ThreadRef>) -> Option<String> {
@@ -687,14 +806,12 @@ impl IRC {
     ) -> Option<String> {
         let thread_ref = thread.as_ref()?;
 
-        if self.capabilities.supports_message_tags && self.capabilities.supports_reply_tags {
-            if self.resolve_irc_reply_target(thread).await.is_some() {
-                return None;
-            }
-        }
-
         if self.is_thread_root_message(pipo_id, thread_ref).await {
-            return Some("[thread]".to_string());
+            return if self.show_thread_root_marker {
+                Some("[thread]".to_string())
+            } else {
+                None
+            };
         }
 
         let root_author = IRC::sanitize_thread_context_text(thread_ref.root_author.as_deref())
@@ -702,7 +819,7 @@ impl IRC {
             .unwrap_or_else(|| "unknown".to_string());
         let root_excerpt = IRC::sanitize_thread_context_text(thread_ref.root_excerpt.as_deref())
             .filter(|excerpt| !excerpt.is_empty())
-            .map(|excerpt| IRC::truncate_with_ellipsis(excerpt, THREAD_EXCERPT_MAX_LEN))
+            .map(|excerpt| IRC::truncate_with_ellipsis(excerpt, self.thread_excerpt_len))
             .unwrap_or_else(|| "…".to_string());
 
         Some(format!("↪ reply to {}: {}", root_author, root_excerpt))
@@ -1049,6 +1166,16 @@ impl IRC {
             }
         } else {
             return Err(anyhow!("Could not get sender for channel {}", channel));
+        }
+    }
+}
+
+impl Default for ThreadPresentation {
+    fn default() -> Self {
+        Self {
+            reply_target: None,
+            plaintext_prefix: None,
+            mode_used: "none",
         }
     }
 }

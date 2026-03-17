@@ -20,7 +20,7 @@ mod rachni;
 pub mod slack;
 
 use crate::discord::Discord;
-use crate::irc::IRC;
+use crate::irc::{IRC, ThreadPresentationMode};
 use crate::mumble::Mumble;
 use crate::rachni::Rachni;
 use crate::slack::Slack;
@@ -214,6 +214,12 @@ enum ConfigTransport {
         use_tls: bool,
         img_root: Arc<String>,
         channel_mapping: HashMap<Arc<String>, Arc<String>>,
+        #[serde(default)]
+        thread_presentation_mode: ThreadPresentationMode,
+        #[serde(default = "default_thread_excerpt_len")]
+        thread_excerpt_len: usize,
+        #[serde(default = "default_show_thread_root_marker")]
+        show_thread_root_marker: bool,
     },
     Discord {
         token: Arc<String>,
@@ -251,6 +257,14 @@ enum ConfigTransport {
 struct ParsedConfig {
     buses: Vec<ConfigBus>,
     transports: Vec<ConfigTransport>,
+}
+
+fn default_thread_excerpt_len() -> usize {
+    120
+}
+
+fn default_show_thread_root_marker() -> bool {
+    true
 }
 
 pub async fn inner_main() -> anyhow::Result<()> {
@@ -393,6 +407,9 @@ pub async fn inner_main() -> anyhow::Result<()> {
                 use_tls,
                 img_root,
                 channel_mapping,
+                thread_presentation_mode,
+                thread_excerpt_len,
+                show_thread_root_marker,
             } => {
                 // tokio::spawn maybe?
                 let mut instance = IRC::new(
@@ -404,6 +421,9 @@ pub async fn inner_main() -> anyhow::Result<()> {
                     *use_tls,
                     &img_root,
                     &channel_mapping,
+                    *thread_presentation_mode,
+                    *thread_excerpt_len,
+                    *show_thread_root_marker,
                     transport_id,
                 )
                 .await?;
