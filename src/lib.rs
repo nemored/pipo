@@ -20,7 +20,7 @@ mod rachni;
 pub mod slack;
 
 use crate::discord::Discord;
-use crate::irc::{IRC, ThreadPresentationMode};
+use crate::irc::{IRC, ThreadContextRepeat, ThreadFallbackStyle, ThreadPresentationMode};
 use crate::mumble::Mumble;
 use crate::rachni::Rachni;
 use crate::slack::Slack;
@@ -216,6 +216,10 @@ enum ConfigTransport {
         channel_mapping: HashMap<Arc<String>, Arc<String>>,
         #[serde(default)]
         thread_presentation_mode: ThreadPresentationMode,
+        #[serde(default)]
+        thread_fallback_style: ThreadFallbackStyle,
+        #[serde(default)]
+        thread_context_repeat: ThreadContextRepeat,
         #[serde(default = "default_thread_excerpt_len")]
         thread_excerpt_len: usize,
         #[serde(default = "default_show_thread_root_marker")]
@@ -408,6 +412,8 @@ pub async fn inner_main() -> anyhow::Result<()> {
                 img_root,
                 channel_mapping,
                 thread_presentation_mode,
+                thread_fallback_style,
+                thread_context_repeat,
                 thread_excerpt_len,
                 show_thread_root_marker,
             } => {
@@ -422,6 +428,8 @@ pub async fn inner_main() -> anyhow::Result<()> {
                     &img_root,
                     &channel_mapping,
                     *thread_presentation_mode,
+                    *thread_fallback_style,
+                    *thread_context_repeat,
                     *thread_excerpt_len,
                     *show_thread_root_marker,
                     transport_id,
