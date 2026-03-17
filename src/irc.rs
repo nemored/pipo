@@ -22,6 +22,7 @@ use anyhow::anyhow;
 const TRANSPORT_NAME: &'static str = "IRC";
 const DEFAULT_THREAD_EXCERPT_LEN: usize = 120;
 const REPLY_TOKEN_TTL: Duration = Duration::from_secs(60 * 60 * 6);
+const THREAD_LIST_LIMIT: usize = 8;
 
 #[derive(Clone, Debug)]
 struct ReplyTokenEntry {
@@ -47,7 +48,7 @@ pub(crate) enum ThreadFallbackStyle {
     Verbose,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ThreadContextRepeat {
     #[default]
@@ -879,7 +880,14 @@ impl IRC {
         };
 
         if emit_expanded {
-            Some(expanded_prefix)
+            if self.thread_context_repeat == ThreadContextRepeat::FirstSeen {
+                Some(format!(
+                    "{} (reply with: >>{} <message>)",
+                    expanded_prefix, thread_token
+                ))
+            } else {
+                Some(expanded_prefix)
+            }
         } else if self.thread_fallback_style == ThreadFallbackStyle::Verbose {
             Some(expanded_prefix)
         } else {
@@ -951,6 +959,77 @@ impl IRC {
             .filter(|(token_channel, _)| token_channel == channel)
             .map(|(_, token)| token.clone())
             .collect()
+    }
+
+    fn active_reply_token_entries_for_channel(
+        &self,
+        channel: &str,
+    ) -> Vec<(String, ReplyTokenEntry)> {
+        let mut tokens = self.reply_tokens.lock().unwrap();
+        IRC::cleanup_expired_reply_tokens(&mut tokens);
+
+        let mut entries = tokens
+            .iter()
+            .filter(|((token_channel, _), _)| token_channel == channel)
+            .map(|((_, token), entry)| (token.clone(), entry.clone()))
+            .collect::<Vec<_>>();
+
+        entries.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
+        entries
+    }
+
+    fn thread_root_summary(&self, thread_ref: &ThreadRef) -> String {
+        let author = IRC::sanitize_thread_context_text(thread_ref.root_author.as_deref())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "unknown".to_string());
+        let excerpt = IRC::sanitize_thread_context_text(thread_ref.root_excerpt.as_deref())
+            .filter(|value| !value.is_empty())
+            .map(|value| IRC::truncate_with_ellipsis(value, 40))
+            .unwrap_or_else(|| "…".to_string());
+
+        format!("{}: {}", author, excerpt)
+    }
+
+    async fn handle_local_thread_command(
+        &self,
+        client: &Client,
+        channel: &str,
+        message: &str,
+    ) -> anyhow::Result<bool> {
+        let trimmed = message.trim();
+
+        if trimmed.eq_ignore_ascii_case("/threads") {
+            let entries = self.active_reply_token_entries_for_channel(channel);
+            let rendered = if entries.is_empty() {
+                "none cached yet".to_string()
+            } else {
+                entries
+                    .into_iter()
+                    .take(THREAD_LIST_LIMIT)
+                    .map(|(token, entry)| {
+                        format!("{} ({})", token, self.thread_root_summary(&entry.thread_ref))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            };
+
+            let notice = format!(
+                "Recent thread tokens (latest {}): {}",
+                THREAD_LIST_LIMIT, rendered
+            );
+            client.send_notice(channel, notice)?;
+            return Ok(true);
+        }
+
+        if trimmed.eq_ignore_ascii_case("/threadhelp") || trimmed.eq_ignore_ascii_case("/help") {
+            client.send_notice(
+                channel,
+                "Thread replies: >>TOKEN your reply (example: >>K7F2 thanks) or /reply TOKEN your reply. Use /threads to list recent tokens.",
+            )?;
+            return Ok(true);
+        }
+
+        Ok(false)
     }
 
     fn parse_reply_command(message: &str) -> Option<(String, String)> {
@@ -1116,6 +1195,13 @@ impl IRC {
         message: String,
         irc_message_id: Option<String>,
     ) -> anyhow::Result<()> {
+        if self
+            .handle_local_thread_command(client, &channel, &message)
+            .await?
+        {
+            return Ok(());
+        }
+
         if let Some(sender) = self.channels.get(&channel) {
             lazy_static! {
                 static ref RE: Regex = Regex::new("^\x01ACTION (.*)\x01\r?$").unwrap();
