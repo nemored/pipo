@@ -12,9 +12,19 @@ on:
       - feature/matrix
       - feature/elixir-supervisor
       - rewrite/go-mainline
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+    inputs:
+      run_full_parity:
+        description: 'Run full parity matrix (including live Slack/Discord API checks)'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   rust-test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,8 +40,6 @@ jobs:
 
       - name: Verify protobuf clean regeneration
         run: |
-          # This runs against the checked-out commit for the PR.
-          # It only fails if the build mutates tracked files unexpectedly.
           cargo clean
           cargo build --locked --verbose
           git update-index -q --refresh
@@ -52,6 +60,7 @@ jobs:
           fi
 
   go-test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,20 +85,52 @@ jobs:
       - name: Test (Go)
         run: go test ./...
 
-      - name: Parity harness smoke test
+  parity-pr-required:
+    name: parity-pr-required (fixtures + local integration subset)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Fixture parity (deterministic)
         run: |
           go run ./cmd/parity-harness \
             -fixture docs/parity/fixtures/high-risk.json \
             -artifact-root artifacts/parity \
-            -run-id ci-${{ github.run_id }}-${{ github.run_attempt }}
+            -run-id pr-fixture-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Local transport integration subset
+        run: |
+          go run ./cmd/parity-harness \
+            -mode integration \
+            -fixture docs/parity/fixtures/integration.json \
+            -artifact-root artifacts/parity \
+            -run-id pr-integration-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload parity artifacts on failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: parity-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          name: parity-pr-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/parity
           if-no-files-found: warn
+
+  parity-nightly:
+    name: parity-nightly (full matrix + live API checks)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_full_parity)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
       - name: Third-party parity preflight
         env:
@@ -100,10 +141,108 @@ jobs:
           DISCORD_TEST_BOT_TOKEN: ${{ secrets.DISCORD_TEST_BOT_TOKEN }}
         run: ./scripts/parity-thirdparty-preflight.sh
 
+      - name: Live Slack/Discord API credential check
+        env:
+          SLACK_TEST_BOT_TOKEN: ${{ secrets.SLACK_TEST_BOT_TOKEN }}
+          DISCORD_TEST_BOT_TOKEN: ${{ secrets.DISCORD_TEST_BOT_TOKEN }}
+        run: ./scripts/parity-live-api-checks.sh
+
+      - name: Full fixture parity
+        run: |
+          go run ./cmd/parity-harness \
+            -fixture docs/parity/fixtures/high-risk.json \
+            -artifact-root artifacts/parity \
+            -run-id nightly-fixture-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Full integration parity matrix
+        run: |
+          go run ./cmd/parity-harness \
+            -mode integration \
+            -fixture docs/parity/fixtures/integration.json \
+            -artifact-root artifacts/parity \
+            -run-id nightly-integration-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload parity artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-nightly-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/parity
+          if-no-files-found: warn
+
+  parity-manual:
+    name: parity-manual (ad hoc full parity)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_full_parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Full parity run for release readiness
+        run: |
+          go run ./cmd/parity-harness \
+            -fixture docs/parity/fixtures/high-risk.json \
+            -artifact-root artifacts/parity \
+            -run-id manual-fixture-${{ github.run_id }}-${{ github.run_attempt }}
+          go run ./cmd/parity-harness \
+            -mode integration \
+            -fixture docs/parity/fixtures/integration.json \
+            -artifact-root artifacts/parity \
+            -run-id manual-integration-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload parity artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-manual-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/parity
+          if-no-files-found: warn
+
+  promotion-trend-gate:
+    name: promotion-trend-gate
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Gate on trend metrics instead of single run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflow_id = context.workflow;
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id,
+              per_page: 20,
+              event: 'schedule'
+            });
+            const runs = (data.workflow_runs || []).filter(r => r.status === 'completed');
+            if (runs.length < 5) {
+              core.setFailed(`insufficient trend data for gating: need >=5 scheduled runs, found ${runs.length}`);
+              return;
+            }
+            const successes = runs.filter(r => r.conclusion === 'success').length;
+            const failures = runs.filter(r => r.conclusion !== 'success').length;
+            const flaky = runs.filter(r => (r.run_attempt || 1) > 1).length;
+
+            const passRate = successes / runs.length;
+            const divergenceFrequency = failures / runs.length;
+            const flakyIndex = flaky / runs.length;
+
+            core.info(`trend window=${runs.length} pass_rate=${passRate.toFixed(3)} divergence_frequency=${divergenceFrequency.toFixed(3)} flaky_scenario_index=${flakyIndex.toFixed(3)}`);
+            if (passRate < 0.95 || divergenceFrequency > 0.10 || flakyIndex > 0.15) {
+              core.setFailed(`trend gate failed: pass_rate=${passRate.toFixed(3)} divergence_frequency=${divergenceFrequency.toFixed(3)} flaky_scenario_index=${flakyIndex.toFixed(3)}`);
+            }
+
   rust-package:
     runs-on: ubuntu-latest
     needs: rust-test
-    if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || startsWith(github.ref, 'refs/tags/v')
+    if: ((github.ref == 'refs/heads/main' && github.event_name == 'push') || startsWith(github.ref, 'refs/tags/v')) && github.event_name != 'schedule'
     strategy:
       matrix:
         include:
@@ -131,7 +270,7 @@ jobs:
   go-package:
     runs-on: ubuntu-latest
     needs: go-test
-    if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || startsWith(github.ref, 'refs/tags/v')
+    if: ((github.ref == 'refs/heads/main' && github.event_name == 'push') || startsWith(github.ref, 'refs/tags/v')) && github.event_name != 'schedule'
     strategy:
       matrix:
         include:
