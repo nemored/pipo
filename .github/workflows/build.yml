@@ -79,6 +79,15 @@ jobs:
       - name: Parity harness smoke test
         run: go run ./cmd/parity-harness -fixture docs/parity/fixtures/high-risk.json
 
+      - name: Third-party parity preflight
+        env:
+          CONFIG_PATH: ${{ runner.temp }}/parity-thirdparty/config.json
+          DB_PATH: ${{ runner.temp }}/parity-thirdparty/messages.db
+          SLACK_TEST_BOT_TOKEN: ${{ secrets.SLACK_TEST_BOT_TOKEN }}
+          SLACK_TEST_APP_TOKEN: ${{ secrets.SLACK_TEST_APP_TOKEN }}
+          DISCORD_TEST_BOT_TOKEN: ${{ secrets.DISCORD_TEST_BOT_TOKEN }}
+        run: ./scripts/parity-thirdparty-preflight.sh
+
   rust-package:
     runs-on: ubuntu-latest
     needs: rust-test
