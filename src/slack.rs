@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::anyhow;
@@ -55,6 +56,9 @@ pub(crate) struct Slack {
     user_id_map: HashMap<String, String>,
     seen_event_ids: VecDeque<String>,
     irc_formatting_enabled: bool,
+    payload_logging_enabled: bool,
+    payload_log_sample_rate: f64,
+    payload_log_redact_fields: Vec<String>,
 }
 
 struct WebSocket {
@@ -85,8 +89,14 @@ impl Slack {
         token: String,
         bot_token: String,
         irc_formatting_enabled: bool,
+        payload_logging_enabled: bool,
+        payload_log_sample_rate: f64,
+        payload_log_retention_days: u64,
+        payload_log_redact_fields: Vec<String>,
         channel_mapping: &HashMap<Arc<String>, Arc<String>>,
     ) -> anyhow::Result<Slack> {
+        Self::cleanup_old_payload_logs(&pool, payload_log_retention_days).await?;
+
         let channels = channel_mapping
             .iter()
             .filter_map(|(channelname, busname)| {
@@ -119,6 +129,9 @@ impl Slack {
             user_id_map: HashMap::new(),
             seen_event_ids: VecDeque::with_capacity(50),
             irc_formatting_enabled,
+            payload_logging_enabled,
+            payload_log_sample_rate,
+            payload_log_redact_fields,
         })
     }
 
@@ -1359,9 +1372,13 @@ impl Slack {
         payload: &EventPayload,
         is_duplicate: bool,
     ) -> anyhow::Result<()> {
+        if !self.payload_logging_enabled || !self.should_sample_payload_log() {
+            return Ok(());
+        }
+
         let envelope_id = envelope_id.to_string();
         let event_id = event_id.map(str::to_string);
-        let payload_json = serde_json::to_string(payload)?;
+        let payload_json = self.redacted_payload_json(payload)?;
         let payload_hash = format!("{:x}", Sha256::digest(payload_json.as_bytes()));
         let (event_type, channel_id, user_id, ts, thread_ts) =
             Self::event_payload_metadata(payload);
@@ -1417,6 +1434,113 @@ impl Slack {
             .map_err(|e| anyhow!("interact error: {e}"))??;
 
         Ok(())
+    }
+
+    async fn cleanup_old_payload_logs(pool: &Pool, retention_days: u64) -> anyhow::Result<()> {
+        let retention_days = retention_days as i64;
+
+        pool.get()
+            .await?
+            .interact(move |conn| {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS slack_event_log (
+                                   id            INTEGER PRIMARY KEY,
+                                   received_at   TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+                                   envelope_id   TEXT,
+                                   event_id      TEXT,
+                                   retry_attempt INTEGER,
+                                   event_type    TEXT,
+                                   channel_id    TEXT,
+                                   user_id       TEXT,
+                                   ts            TEXT,
+                                   thread_ts     TEXT,
+                                   payload_json  TEXT,
+                                   payload_hash  TEXT,
+                                   is_duplicate  INTEGER
+                               );",
+                )?;
+
+                conn.execute(
+                    "DELETE FROM slack_event_log
+                     WHERE received_at < datetime('now', '-' || ? || ' days')",
+                    params![retention_days],
+                )
+            })
+            .await
+            .map_err(|e| anyhow!("interact error: {e}"))??;
+
+        Ok(())
+    }
+
+    fn should_sample_payload_log(&self) -> bool {
+        if self.payload_log_sample_rate >= 1.0 {
+            return true;
+        }
+
+        if self.payload_log_sample_rate <= 0.0 {
+            return false;
+        }
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.subsec_nanos());
+        let sample = f64::from(nanos % 1000) / 1000.0;
+        sample < self.payload_log_sample_rate
+    }
+
+    fn redacted_payload_json(&self, payload: &EventPayload) -> anyhow::Result<String> {
+        let mut payload_value = serde_json::to_value(payload)?;
+        for path in &self.payload_log_redact_fields {
+            let normalized_path = path.trim().trim_start_matches('/');
+            let separator = if normalized_path.contains('/') {
+                '/'
+            } else {
+                '.'
+            };
+            let segments: Vec<&str> = normalized_path
+                .split(separator)
+                .filter(|segment| !segment.is_empty())
+                .collect();
+
+            if segments.is_empty() {
+                continue;
+            }
+
+            Self::redact_json_path(&mut payload_value, &segments);
+        }
+
+        Ok(serde_json::to_string(&payload_value)?)
+    }
+
+    fn redact_json_path(value: &mut Value, path_segments: &[&str]) {
+        if path_segments.is_empty() {
+            *value = Value::String("[REDACTED]".to_string());
+            return;
+        }
+
+        match value {
+            Value::Object(map) => {
+                if path_segments[0] == "*" {
+                    for child in map.values_mut() {
+                        Self::redact_json_path(child, &path_segments[1..]);
+                    }
+                } else if let Some(child) = map.get_mut(path_segments[0]) {
+                    Self::redact_json_path(child, &path_segments[1..]);
+                }
+            }
+            Value::Array(array) => {
+                if path_segments[0] == "*" {
+                    for child in array {
+                        Self::redact_json_path(child, &path_segments[1..]);
+                    }
+                } else if let Ok(index) = path_segments[0].parse::<usize>() {
+                    if let Some(child) = array.get_mut(index) {
+                        Self::redact_json_path(child, &path_segments[1..]);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn event_payload_metadata(
@@ -2920,6 +3044,10 @@ mod tests {
             "xapp-token".to_string(),
             "xoxb-token".to_string(),
             true,
+            true,
+            1.0,
+            7,
+            vec![],
             &channel_mapping,
         )
         .await
@@ -3092,4 +3220,43 @@ mod tests {
             other => panic!("unexpected outbound message: {other:?}"),
         }
     }
+    #[test]
+    fn redact_json_path_supports_dot_and_slash_paths() {
+        let mut payload = serde_json::json!({
+            "event": {
+                "user": {
+                    "profile": {
+                        "image_48": "https://example/image.png",
+                        "email": "user@example.com"
+                    }
+                },
+                "token": "abc123"
+            }
+        });
+
+        Slack::redact_json_path(&mut payload, &["event", "user", "profile", "image_48"]);
+        Slack::redact_json_path(&mut payload, &["event", "token"]);
+
+        assert_eq!(payload["event"]["user"]["profile"]["image_48"], "[REDACTED]");
+        assert_eq!(payload["event"]["token"], "[REDACTED]");
+        assert_eq!(payload["event"]["user"]["profile"]["email"], "user@example.com");
+    }
+
+    #[test]
+    fn redact_json_path_supports_wildcards() {
+        let mut payload = serde_json::json!({
+            "event": {
+                "blocks": [
+                    {"token": "a"},
+                    {"token": "b"}
+                ]
+            }
+        });
+
+        Slack::redact_json_path(&mut payload, &["event", "blocks", "*", "token"]);
+
+        assert_eq!(payload["event"]["blocks"][0]["token"], "[REDACTED]");
+        assert_eq!(payload["event"]["blocks"][1]["token"], "[REDACTED]");
+    }
+
 }

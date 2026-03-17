@@ -215,6 +215,10 @@ enum ConfigTransport {
         token: Arc<String>,
         bot_token: Arc<String>,
         irc_formatting_enabled: Option<bool>,
+        slack_payload_logging_enabled: Option<bool>,
+        slack_payload_log_sample_rate: Option<f64>,
+        slack_payload_log_retention_days: Option<u64>,
+        slack_payload_log_redact_fields: Option<Vec<String>>,
         channel_mapping: HashMap<Arc<String>, Arc<String>>,
     },
     Minecraft {
@@ -474,8 +478,19 @@ pub async fn inner_main() -> anyhow::Result<()> {
                 token,
                 bot_token,
                 irc_formatting_enabled,
+                slack_payload_logging_enabled,
+                slack_payload_log_sample_rate,
+                slack_payload_log_retention_days,
+                slack_payload_log_redact_fields,
                 channel_mapping,
             } => {
+                let payload_log_sample_rate = slack_payload_log_sample_rate.unwrap_or(1.0);
+                if !(0.0..=1.0).contains(&payload_log_sample_rate) {
+                    return Err(anyhow!(
+                        "Slack config value `slack_payload_log_sample_rate` must be between 0.0 and 1.0 inclusive"
+                    ));
+                }
+
                 let mut instance = Slack::new(
                     transport_id,
                     &bus_map,
@@ -484,6 +499,10 @@ pub async fn inner_main() -> anyhow::Result<()> {
                     token.to_string(),
                     bot_token.to_string(),
                     irc_formatting_enabled.unwrap_or(true),
+                    slack_payload_logging_enabled.unwrap_or(false),
+                    payload_log_sample_rate,
+                    slack_payload_log_retention_days.unwrap_or(7),
+                    slack_payload_log_redact_fields.clone().unwrap_or_default(),
                     &channel_mapping,
                 )
                 .await?;
