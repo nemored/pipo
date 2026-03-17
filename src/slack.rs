@@ -1136,11 +1136,15 @@ impl Slack {
             header::AUTHORIZATION,
             ("Bearer ".to_owned() + &self.bot_token).parse()?,
         );
+        
+        let url = reqwest::Url::parse_with_params(
+            "https://slack.com/api/users.profile.get",
+            &[("user", user_id.clone())],
+        )?;
 
         let response = self
             .http
-            .request(Method::GET, "https://slack.com/api/users.profile.get")
-            .query(&[("user", user_id.clone())])
+            .request(Method::GET, url)
             .headers(headers)
             .send()
             .await?;
