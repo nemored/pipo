@@ -274,3 +274,118 @@ func TestSlackRuntimeForwardOutboundRecordsSlackReference(t *testing.T) {
 		t.Fatalf("expected insert path to allocate a new pipo id, got existing id %d", *pipo)
 	}
 }
+
+func TestSlackRuntimeInboundMutationEventsResolvePipoID(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+	id, err := sqlite.InsertOrReplaceSlack(ctx, "1700000000.100")
+	if err != nil {
+		t.Fatalf("insert slack mapping: %v", err)
+	}
+
+	rt := &slackRuntime{store: sqlite, userDisplayName: map[string]string{"U1": "Alice"}, channelMeta: map[string]slackChannelMeta{"C1": {ID: "C1", Name: "general"}}}
+	api := &captureRuntimeAPI{}
+	mapping := map[string]string{"C1": "main"}
+
+	rt.handleEventsAPI([]byte(`{"type":"message","subtype":"message_changed","channel":"C1","message":{"ts":"1700000000.100","user":"U1","text":"edited"}}`), api, mapping, 7)
+	rt.handleEventsAPI([]byte(`{"type":"message","subtype":"message_deleted","channel":"C1","deleted_ts":"1700000000.100"}`), api, mapping, 7)
+	rt.handleEventsAPI([]byte(`{"type":"reaction_added","reaction":"thumbsup","item":{"type":"message","channel":"C1","ts":"1700000000.100"}}`), api, mapping, 7)
+	rt.handleEventsAPI([]byte(`{"type":"reaction_removed","reaction":"thumbsup","item":{"type":"message","channel":"C1","ts":"1700000000.100"}}`), api, mapping, 7)
+
+	events := api.events["main"]
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events, got %d", len(events))
+	}
+	if events[0].Kind != model.EventText || !events[0].IsEdit || events[0].PipoID == nil || *events[0].PipoID != id {
+		t.Fatalf("unexpected edit event: %+v", events[0])
+	}
+	if events[1].Kind != model.EventDelete || events[1].PipoID == nil || *events[1].PipoID != id {
+		t.Fatalf("unexpected delete event: %+v", events[1])
+	}
+	if events[2].Kind != model.EventReaction || events[2].Emoji == nil || *events[2].Emoji != "thumbsup" || events[2].Remove {
+		t.Fatalf("unexpected reaction add event: %+v", events[2])
+	}
+	if events[3].Kind != model.EventReaction || !events[3].Remove {
+		t.Fatalf("unexpected reaction remove event: %+v", events[3])
+	}
+}
+
+func TestSlackRuntimeInboundMutationEventsMissingMappingNoop(t *testing.T) {
+	rt := &slackRuntime{userDisplayName: map[string]string{"U1": "Alice"}, channelMeta: map[string]slackChannelMeta{"C1": {ID: "C1", Name: "general"}}}
+	api := &captureRuntimeAPI{}
+	mapping := map[string]string{"C1": "main"}
+
+	rt.handleEventsAPI([]byte(`{"type":"message","subtype":"message_deleted","channel":"C1","deleted_ts":"1700000000.999"}`), api, mapping, 7)
+	rt.handleEventsAPI([]byte(`{"type":"reaction_added","reaction":"thumbsup","item":{"type":"message","channel":"C1","ts":"1700000000.999"}}`), api, mapping, 7)
+
+	if got := len(api.events["main"]); got != 0 {
+		t.Fatalf("expected no published events for missing mapping, got %d", got)
+	}
+}
+
+func TestSlackRuntimeOutboundMutationsAndStaleTargets(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+	id, err := sqlite.InsertOrReplaceSlack(ctx, "1700000000.100")
+	if err != nil {
+		t.Fatalf("insert slack mapping: %v", err)
+	}
+	msg := "rewritten"
+	emoji := "thumbsup"
+
+	var paths []string
+	rt := &slackRuntime{botToken: "xoxb-test", store: sqlite, http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		switch req.URL.Path {
+		case "/api/chat.update":
+			return jsonResponse(`{"ok":true,"ts":"1700000000.101"}`), nil
+		case "/api/chat.delete":
+			return jsonResponse(`{"ok":true}`), nil
+		case "/api/reactions.add":
+			return jsonResponse(`{"ok":false,"error":"message_not_found"}`), nil
+		case "/api/reactions.remove":
+			return jsonResponse(`{"ok":false,"error":"no_reaction"}`), nil
+		default:
+			t.Fatalf("unexpected request path: %s", req.URL.Path)
+			return nil, nil
+		}
+	})}}
+
+	if err := rt.forwardOutboundEvent("main", map[string]string{"main": "C1"}, 99, model.Event{Sender: 1, IsEdit: true, Kind: model.EventText, PipoID: &id, Message: &msg}); err != nil {
+		t.Fatalf("edit forward failed: %v", err)
+	}
+	if err := rt.forwardOutboundEvent("main", map[string]string{"main": "C1"}, 99, model.Event{Sender: 1, Kind: model.EventDelete, PipoID: &id}); err != nil {
+		t.Fatalf("delete forward failed: %v", err)
+	}
+	if err := rt.forwardOutboundEvent("main", map[string]string{"main": "C1"}, 99, model.Event{Sender: 1, Kind: model.EventReaction, PipoID: &id, Emoji: &emoji}); err != nil {
+		t.Fatalf("reaction add stale should be no-op: %v", err)
+	}
+	if err := rt.forwardOutboundEvent("main", map[string]string{"main": "C1"}, 99, model.Event{Sender: 1, Kind: model.EventReaction, PipoID: &id, Emoji: &emoji, Remove: true}); err != nil {
+		t.Fatalf("reaction remove stale should be no-op: %v", err)
+	}
+
+	if len(paths) != 4 {
+		t.Fatalf("expected 4 API calls, got %d (%v)", len(paths), paths)
+	}
+	updatedSlack, err := sqlite.SelectSlackByID(ctx, id)
+	if err != nil || updatedSlack == nil || *updatedSlack != "1700000000.101" {
+		t.Fatalf("expected updated slack mapping after edit, got=%v err=%v", updatedSlack, err)
+	}
+
+	paths = nil
+	missing := int64(id + 100)
+	if err := rt.forwardOutboundEvent("main", map[string]string{"main": "C1"}, 99, model.Event{Sender: 1, Kind: model.EventDelete, PipoID: &missing}); err != nil {
+		t.Fatalf("missing mapping should be no-op: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("expected no API call for missing mapping, got %v", paths)
+	}
+}
