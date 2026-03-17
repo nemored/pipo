@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite"
@@ -85,6 +86,25 @@ func bootstrapMessagesSchema(ctx context.Context, db *sql.DB) error {
 	end;`
 	_, err = db.ExecContext(ctx, schema)
 	observeDBError("schema_exec", err)
+	return err
+}
+
+func bootstrapIRCIdentitySchema(ctx context.Context, db *sql.DB) error {
+	const schema = `CREATE TABLE IF NOT EXISTS irc_message_identity (
+		source_key    TEXT PRIMARY KEY,
+		pipo_id       INTEGER NOT NULL,
+		network       TEXT NOT NULL,
+		channel       TEXT NOT NULL,
+		sender        TEXT NOT NULL,
+		message_token TEXT,
+		message_time  TEXT,
+		message_raw   TEXT,
+		created_at    DEFAULT (strftime('%Y-%m-%d %H:%M:%S:%s', 'now', 'localtime'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_irc_identity_token ON irc_message_identity(network, channel, message_token);
+	CREATE INDEX IF NOT EXISTS idx_irc_identity_pipo_id ON irc_message_identity(pipo_id);`
+	_, err := db.ExecContext(ctx, schema)
+	observeDBError("schema_irc_identity_exec", err)
 	return err
 }
 
@@ -286,6 +306,123 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+type IRCIdentityRecord struct {
+	SourceKey    string
+	Network      string
+	Channel      string
+	Sender       string
+	MessageToken *string
+	MessageTime  *string
+	MessageRaw   *string
+}
+
+func (s *SQLiteStore) ensureIRCIdentitySchema(ctx context.Context) error {
+	err := bootstrapIRCIdentitySchema(ctx, s.db)
+	if err != nil {
+		observeDBError("ensure_irc_identity_schema", err)
+	}
+	return err
+}
+
+func (s *SQLiteStore) EnsureIRCIdentity(ctx context.Context, rec IRCIdentityRecord) (int64, bool, error) {
+	if err := s.ensureIRCIdentitySchema(ctx); err != nil {
+		return 0, false, err
+	}
+	if strings.TrimSpace(rec.SourceKey) == "" {
+		return 0, false, fmt.Errorf("irc source key is required")
+	}
+	if id, err := s.SelectPipoIDByIRCSourceKey(ctx, rec.SourceKey); err != nil {
+		observeDBError("select_irc_identity_by_source_key", err)
+		return 0, false, err
+	} else if id != nil {
+		return *id, false, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		observeDBError("begin_ensure_irc_identity", err)
+		return 0, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var existing int64
+	err = tx.QueryRowContext(ctx, `SELECT pipo_id FROM irc_message_identity WHERE source_key = ?1`, rec.SourceKey).Scan(&existing)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			observeDBError("commit_ensure_irc_identity_existing", err)
+			return 0, false, err
+		}
+		return existing, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		observeDBError("query_ensure_irc_identity_existing", err)
+		return 0, false, err
+	}
+
+	id := s.allocID()
+	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO messages (id) VALUES (?1)`, id); err != nil {
+		observeDBError("insert_messages_ensure_irc_identity", err)
+		return 0, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO irc_message_identity
+		(source_key, pipo_id, network, channel, sender, message_token, message_time, message_raw)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+		rec.SourceKey,
+		id,
+		rec.Network,
+		rec.Channel,
+		rec.Sender,
+		rec.MessageToken,
+		rec.MessageTime,
+		rec.MessageRaw,
+	); err != nil {
+		observeDBError("insert_irc_identity", err)
+		if existingID, lookupErr := s.SelectPipoIDByIRCSourceKey(ctx, rec.SourceKey); lookupErr == nil && existingID != nil {
+			return *existingID, false, nil
+		}
+		return 0, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		observeDBError("commit_ensure_irc_identity", err)
+		return 0, false, err
+	}
+	return id, true, nil
+}
+
+func (s *SQLiteStore) SelectPipoIDByIRCSourceKey(ctx context.Context, sourceKey string) (*int64, error) {
+	if err := s.ensureIRCIdentitySchema(ctx); err != nil {
+		return nil, err
+	}
+	const q = `SELECT pipo_id FROM irc_message_identity WHERE source_key = ?1`
+	var id int64
+	err := s.db.QueryRowContext(ctx, q, sourceKey).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		observeDBError("select_pipo_id_by_irc_source_key", err)
+		return nil, err
+	}
+	return &id, nil
+}
+
+func (s *SQLiteStore) SelectPipoIDByIRCToken(ctx context.Context, network, channel, token string) (*int64, error) {
+	if err := s.ensureIRCIdentitySchema(ctx); err != nil {
+		return nil, err
+	}
+	const q = `SELECT pipo_id FROM irc_message_identity WHERE network = ?1 AND channel = ?2 AND message_token = ?3 ORDER BY created_at DESC LIMIT 1`
+	var id int64
+	err := s.db.QueryRowContext(ctx, q, network, channel, token).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		observeDBError("select_pipo_id_by_irc_token", err)
+		return nil, err
+	}
+	return &id, nil
 }
 
 func (s *SQLiteStore) DebugCount(ctx context.Context) (int64, error) {
