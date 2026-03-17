@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -30,6 +30,23 @@ pub(crate) enum ThreadPresentationMode {
     PlaintextOnly,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ThreadFallbackStyle {
+    #[default]
+    Compact,
+    Verbose,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ThreadContextRepeat {
+    #[default]
+    FirstSeen,
+    Always,
+    Never,
+}
+
 #[derive(Debug)]
 struct ThreadPresentation {
     reply_target: Option<String>,
@@ -46,8 +63,11 @@ pub(crate) struct IRC {
     pipo_id: Arc<Mutex<i64>>,
     capabilities: IrcCapabilityState,
     thread_presentation_mode: ThreadPresentationMode,
+    thread_fallback_style: ThreadFallbackStyle,
+    thread_context_repeat: ThreadContextRepeat,
     thread_excerpt_len: usize,
     show_thread_root_marker: bool,
+    seen_thread_tokens: Arc<Mutex<HashMap<String, HashSet<String>>>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -67,6 +87,8 @@ impl IRC {
         img_root: &str,
         channel_mapping: &HashMap<Arc<String>, Arc<String>>,
         thread_presentation_mode: ThreadPresentationMode,
+        thread_fallback_style: ThreadFallbackStyle,
+        thread_context_repeat: ThreadContextRepeat,
         thread_excerpt_len: usize,
         show_thread_root_marker: bool,
         transport_id: usize,
@@ -109,12 +131,15 @@ impl IRC {
             pipo_id,
             capabilities: IrcCapabilityState::default(),
             thread_presentation_mode,
+            thread_fallback_style,
+            thread_context_repeat,
             thread_excerpt_len: if thread_excerpt_len == 0 {
                 DEFAULT_THREAD_EXCERPT_LEN
             } else {
                 thread_excerpt_len
             },
             show_thread_root_marker,
+            seen_thread_tokens: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -304,7 +329,9 @@ impl IRC {
         }
         if let Some(message) = message {
             let mut is_edit = is_edit;
-            let thread_presentation = self.resolve_thread_presentation(pipo_id, &thread).await;
+            let thread_presentation = self
+                .resolve_thread_presentation(channel, pipo_id, &thread)
+                .await;
 
             if thread.is_some() {
                 self.log_thread_presentation(channel, pipo_id, &thread_presentation);
@@ -450,7 +477,9 @@ impl IRC {
         }
         if let Some(message) = message {
             let mut is_edit = is_edit;
-            let thread_presentation = self.resolve_thread_presentation(pipo_id, &thread).await;
+            let thread_presentation = self
+                .resolve_thread_presentation(channel, pipo_id, &thread)
+                .await;
 
             if thread.is_some() {
                 self.log_thread_presentation(channel, pipo_id, &thread_presentation);
@@ -697,6 +726,7 @@ impl IRC {
 
     async fn resolve_thread_presentation(
         &self,
+        channel: &str,
         pipo_id: i64,
         thread: &Option<ThreadRef>,
     ) -> ThreadPresentation {
@@ -732,7 +762,7 @@ impl IRC {
                     ThreadPresentation {
                         reply_target: None,
                         plaintext_prefix: self
-                            .outbound_thread_fallback_prefix(pipo_id, thread)
+                            .outbound_thread_fallback_prefix(channel, pipo_id, thread)
                             .await,
                         mode_used: "plaintext_fallback",
                     }
@@ -755,7 +785,9 @@ impl IRC {
             }
             ThreadPresentationMode::PlaintextOnly => ThreadPresentation {
                 reply_target: None,
-                plaintext_prefix: self.outbound_thread_fallback_prefix(pipo_id, thread).await,
+                plaintext_prefix: self
+                    .outbound_thread_fallback_prefix(channel, pipo_id, thread)
+                    .await,
                 mode_used: "plaintext_fallback",
             },
         }
@@ -801,6 +833,7 @@ impl IRC {
 
     async fn outbound_thread_fallback_prefix(
         &self,
+        channel: &str,
         pipo_id: i64,
         thread: &Option<ThreadRef>,
     ) -> Option<String> {
@@ -821,8 +854,61 @@ impl IRC {
             .filter(|excerpt| !excerpt.is_empty())
             .map(|excerpt| IRC::truncate_with_ellipsis(excerpt, self.thread_excerpt_len))
             .unwrap_or_else(|| "…".to_string());
+        let thread_token = IRC::thread_token(thread_ref);
+        let compact_prefix = format!("↪ [t:{}] {}", thread_token, root_author);
+        let expanded_prefix = format!("↪ [t:{}] {}: {}", thread_token, root_author, root_excerpt);
 
-        Some(format!("↪ reply to {}: {}", root_author, root_excerpt))
+        let emit_expanded = match self.thread_context_repeat {
+            ThreadContextRepeat::Always => true,
+            ThreadContextRepeat::Never => false,
+            ThreadContextRepeat::FirstSeen => self.mark_thread_token_seen(channel, &thread_token),
+        };
+
+        if emit_expanded {
+            Some(expanded_prefix)
+        } else if self.thread_fallback_style == ThreadFallbackStyle::Verbose {
+            Some(expanded_prefix)
+        } else {
+            Some(compact_prefix)
+        }
+    }
+
+    fn mark_thread_token_seen(&self, channel: &str, token: &str) -> bool {
+        let mut seen = self.seen_thread_tokens.lock().unwrap();
+        let channel_seen = seen.entry(channel.to_string()).or_default();
+        channel_seen.insert(token.to_string())
+    }
+
+    fn thread_token(thread_ref: &ThreadRef) -> String {
+        let token_input = thread_ref
+            .thread_root_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+            .or_else(|| thread_ref.reply_target_id.map(|id| id.to_string()))
+            .or_else(|| IRC::sanitize_thread_context_text(thread_ref.root_author.as_deref()))
+            .unwrap_or_else(|| "thread".to_string());
+
+        let mut hash: u32 = 0x811c9dc5;
+        for byte in token_input.as_bytes() {
+            hash ^= u32::from(*byte);
+            hash = hash.wrapping_mul(0x01000193);
+        }
+
+        let base36 = IRC::to_base36(hash.max(1));
+        base36.chars().take(4).collect::<String>()
+    }
+
+    fn to_base36(mut value: u32) -> String {
+        let alphabet = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let mut out = Vec::new();
+
+        while value > 0 {
+            out.push(alphabet[(value % 36) as usize] as char);
+            value /= 36;
+        }
+
+        out.iter().rev().collect()
     }
 
     async fn is_thread_root_message(&self, pipo_id: i64, thread_ref: &ThreadRef) -> bool {
