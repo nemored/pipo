@@ -61,7 +61,15 @@ fields, reaction routing, and integration-driver scenario comparisons.
 ** CI and release artifacts
 - Pull requests and branch pushes run both Rust and Go validation jobs.
   - Rust: =cargo build --locked=, =cargo test --locked=, plus protobuf drift/runtime checks.
-  - Go: =gofmt= verification, =go vet ./...=, =go test ./...=, and a parity-harness smoke run with =docs/parity/fixtures/high-risk.json=.
+  - Go: =gofmt= verification, =go vet ./...=, =go test ./...=.
+- Parity validation now runs in staged workflow lanes:
+  - PR-required lane: fixture parity (=docs/parity/fixtures/high-risk.json=) + deterministic local transport integration subset (=docs/parity/fixtures/integration.json=), with no external secrets required.
+  - Nightly/scheduled lane: full parity fixture + integration matrix execution with live Slack/Discord credential checks.
+  - Manual dispatch lane: ad hoc full parity run for release-readiness and migration decision support.
+- Promotion decisions are gated on trend metrics rather than single-run outcomes:
+  - pass rate,
+  - divergence frequency,
+  - flaky-scenario index (rerun prevalence).
 - Pushes to =main= build release binaries and upload them as workflow artifacts.
 - Semver tags matching =v*= also publish a GitHub release with all Go and Rust binaries plus =SHA256SUMS=.
 - Current release targets:
