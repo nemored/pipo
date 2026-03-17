@@ -17,13 +17,13 @@ type slackAdapterRuntime interface {
 	close()
 }
 
-var slackRuntimeFactory = func(tc config.Transport, logger *slog.Logger) slackAdapterRuntime {
-	return newSlackRuntime(tc, logger)
+var slackRuntimeFactory = func(tc config.Transport, logger *slog.Logger, s *store.SQLiteStore) slackAdapterRuntime {
+	return newSlackRuntime(tc, logger, s)
 }
 
 func buildSlack(idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.Logger, m *telemetry.Metrics) core.Transport {
 	t := baseAdapter("Slack", idx, tc, s, logger, m)
-	rt := slackRuntimeFactory(tc, logger)
+	rt := slackRuntimeFactory(tc, logger, s)
 	t.connectFn = rt.connect
 	t.sessionFn = func(ctx context.Context, api core.RuntimeAPI) error {
 		err := rt.runSession(ctx, api, t.remoteToChannel, t.channelToRemote, t.transportID)

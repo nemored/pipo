@@ -12,6 +12,7 @@ import (
 	"github.com/nemored/pipo/internal/config"
 	"github.com/nemored/pipo/internal/core"
 	"github.com/nemored/pipo/internal/model"
+	"github.com/nemored/pipo/internal/store"
 	"github.com/nemored/pipo/internal/telemetry"
 )
 
@@ -61,7 +62,7 @@ func (noopRuntimeAPI) Subscribe(context.Context, string, int) (<-chan model.Even
 func TestSlackAdapterReconnectOnTransientFailure(t *testing.T) {
 	fake := &fakeSlackRuntime{sessionErrs: []error{errReconnect, nil}}
 	prev := slackRuntimeFactory
-	slackRuntimeFactory = func(config.Transport, *slog.Logger) slackAdapterRuntime { return fake }
+	slackRuntimeFactory = func(config.Transport, *slog.Logger, *store.SQLiteStore) slackAdapterRuntime { return fake }
 	defer func() { slackRuntimeFactory = prev }()
 
 	adapter := buildSlack(0, config.Transport{ChannelMapping: map[string]string{"main": "C1"}}, nil, nil, nil)
@@ -79,7 +80,7 @@ func TestSlackAdapterTerminalAuthErrorPropagates(t *testing.T) {
 	want := errors.New("invalid auth")
 	fake := &fakeSlackRuntime{connectErrs: []error{asTerminal(want)}}
 	prev := slackRuntimeFactory
-	slackRuntimeFactory = func(config.Transport, *slog.Logger) slackAdapterRuntime { return fake }
+	slackRuntimeFactory = func(config.Transport, *slog.Logger, *store.SQLiteStore) slackAdapterRuntime { return fake }
 	defer func() { slackRuntimeFactory = prev }()
 
 	adapter := buildSlack(0, config.Transport{ChannelMapping: map[string]string{"main": "C1"}}, nil, nil, nil)
@@ -95,7 +96,7 @@ func TestSlackAdapterTerminalAuthErrorPropagates(t *testing.T) {
 func TestSlackAdapterLifecycleMetricsAndLogs(t *testing.T) {
 	fake := &fakeSlackRuntime{connectErrs: []error{errors.New("temporary dial")}}
 	prev := slackRuntimeFactory
-	slackRuntimeFactory = func(config.Transport, *slog.Logger) slackAdapterRuntime { return fake }
+	slackRuntimeFactory = func(config.Transport, *slog.Logger, *store.SQLiteStore) slackAdapterRuntime { return fake }
 	defer func() { slackRuntimeFactory = prev }()
 
 	var buf bytes.Buffer

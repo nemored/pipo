@@ -2,12 +2,14 @@ package transports
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/nemored/pipo/internal/model"
+	"github.com/nemored/pipo/internal/store"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -144,5 +146,131 @@ func TestSlackRuntimeEventsAPIUpdatesCacheAndPublishes(t *testing.T) {
 	}
 	if events[0].Username == nil || *events[0].Username != "Ali" {
 		t.Fatalf("expected published username Ali, got %+v", events[0].Username)
+	}
+}
+
+func TestBuildSlackOutboundPayloadKinds(t *testing.T) {
+	msg := "hello"
+	name := "BridgeBot"
+	avatar := "https://example.invalid/a.png"
+	threadTS := "1700.1"
+	pipoID := int64(42)
+	cases := []struct {
+		name       string
+		ev         model.Event
+		wantText   string
+		wantOK     bool
+		wantBot    bool
+		wantMeta   bool
+		wantThread bool
+	}{
+		{name: "text", ev: model.Event{Kind: model.EventText, Message: &msg}, wantText: "hello", wantOK: true},
+		{name: "action", ev: model.Event{Kind: model.EventAction, Message: &msg}, wantText: "/me hello", wantOK: true},
+		{name: "bot", ev: model.Event{Kind: model.EventBot, Message: &msg, Username: &name, AvatarURL: &avatar}, wantText: "hello", wantOK: true, wantBot: true},
+		{name: "metadata", ev: model.Event{Kind: model.EventText, Message: &msg, PipoID: &pipoID, Thread: &model.ThreadRef{SlackThreadTS: &threadTS}, Attachments: []model.Attachment{{ID: 1}}, Metadata: map[string]string{"k": "v"}}, wantText: "hello", wantOK: true, wantMeta: true, wantThread: true},
+		{name: "unsupported kind", ev: model.Event{Kind: model.EventDelete, Message: &msg}, wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, ok := buildSlackOutboundPayload(tc.ev, "C1")
+			if ok != tc.wantOK {
+				t.Fatalf("ok mismatch: got %v want %v", ok, tc.wantOK)
+			}
+			if !tc.wantOK {
+				return
+			}
+			if payload["channel"] != "C1" || payload["text"] != tc.wantText {
+				t.Fatalf("unexpected payload basics: %+v", payload)
+			}
+			if tc.wantBot {
+				if payload["username"] != name || payload["icon_url"] != avatar {
+					t.Fatalf("expected bot fields, payload=%+v", payload)
+				}
+			}
+			if tc.wantThread {
+				if payload["thread_ts"] != threadTS {
+					t.Fatalf("expected thread_ts, payload=%+v", payload)
+				}
+			}
+			_, hasMeta := payload["metadata"]
+			if hasMeta != tc.wantMeta {
+				t.Fatalf("metadata presence mismatch: got %v want %v payload=%+v", hasMeta, tc.wantMeta, payload)
+			}
+		})
+	}
+}
+
+func TestSlackRuntimeForwardOutboundRecordsSlackReference(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	var seen map[string]any
+	postCount := 0
+	rt := &slackRuntime{botToken: "xoxb-test", store: sqlite, http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat.postMessage" {
+			t.Fatalf("unexpected request path: %s", req.URL.Path)
+		}
+		defer req.Body.Close()
+		if err := json.NewDecoder(req.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		postCount++
+		if postCount == 1 {
+			return jsonResponse(`{"ok":true,"ts":"1700000000.100"}`), nil
+		}
+		return jsonResponse(`{"ok":true,"ts":"1700000000.101"}`), nil
+	})}}
+
+	msg := "hello"
+	id := int64(7)
+	if _, err := sqlite.InsertAllocatedID(ctx); err != nil { // creates id=1; ensure explicit pipo id exists for update path
+		t.Fatalf("insert allocated id: %v", err)
+	}
+	if _, err := sqlite.InsertAllocatedID(ctx); err != nil {
+		t.Fatalf("insert allocated id: %v", err)
+	}
+	if _, err := sqlite.InsertAllocatedID(ctx); err != nil {
+		t.Fatalf("insert allocated id: %v", err)
+	}
+	if _, err := sqlite.InsertAllocatedID(ctx); err != nil {
+		t.Fatalf("insert allocated id: %v", err)
+	}
+	if _, err := sqlite.InsertAllocatedID(ctx); err != nil {
+		t.Fatalf("insert allocated id: %v", err)
+	}
+	if _, err := sqlite.InsertAllocatedID(ctx); err != nil {
+		t.Fatalf("insert allocated id: %v", err)
+	}
+	if _, err := sqlite.InsertAllocatedID(ctx); err != nil {
+		t.Fatalf("insert allocated id: %v", err)
+	}
+
+	ev := model.Event{Kind: model.EventAction, Message: &msg, Sender: 2, PipoID: &id}
+	if err := rt.forwardOutboundEvent("main", map[string]string{"main": "C1"}, 1, ev); err != nil {
+		t.Fatalf("forwardOutboundEvent error: %v", err)
+	}
+	if seen["text"] != "/me hello" {
+		t.Fatalf("expected action text format, got %+v", seen)
+	}
+	gotSlack, err := sqlite.SelectSlackByID(ctx, id)
+	if err != nil || gotSlack == nil || *gotSlack != "1700000000.100" {
+		t.Fatalf("expected updated slack id for pipo id: got=%v err=%v", gotSlack, err)
+	}
+
+	msg2 := "plain"
+	ev2 := model.Event{Kind: model.EventText, Message: &msg2, Sender: 2}
+	if err := rt.forwardOutboundEvent("main", map[string]string{"main": "C1"}, 1, ev2); err != nil {
+		t.Fatalf("forwardOutboundEvent text error: %v", err)
+	}
+	pipo, err := sqlite.SelectIDBySlack(ctx, "1700000000.101")
+	if err != nil || pipo == nil {
+		t.Fatalf("expected inserted slack mapping for non-pipo outbound, got id=%v err=%v", pipo, err)
+	}
+	if *pipo == id {
+		t.Fatalf("expected insert path to allocate a new pipo id, got existing id %d", *pipo)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/nemored/pipo/internal/config"
 	"github.com/nemored/pipo/internal/core"
 	"github.com/nemored/pipo/internal/model"
+	"github.com/nemored/pipo/internal/store"
 )
 
 const slackSocketOpenURL = "https://slack.com/api/apps.connections.open"
@@ -63,6 +64,7 @@ type slackRuntime struct {
 	userDisplayName map[string]string
 	channelMeta     map[string]slackChannelMeta
 	refreshInterval time.Duration
+	store           *store.SQLiteStore
 }
 
 type slackChannelMeta struct {
@@ -71,7 +73,7 @@ type slackChannelMeta struct {
 	IsPrivate bool
 }
 
-func newSlackRuntime(cfg config.Transport, logger *slog.Logger) *slackRuntime {
+func newSlackRuntime(cfg config.Transport, logger *slog.Logger, st *store.SQLiteStore) *slackRuntime {
 	return &slackRuntime{
 		cfg:             cfg,
 		logger:          logger,
@@ -82,6 +84,7 @@ func newSlackRuntime(cfg config.Transport, logger *slog.Logger) *slackRuntime {
 		userDisplayName: map[string]string{},
 		channelMeta:     map[string]slackChannelMeta{},
 		refreshInterval: 10 * time.Minute,
+		store:           st,
 	}
 }
 
@@ -401,29 +404,116 @@ func (s *slackRuntime) forwardOutboundEvent(busID string, channelToRemote map[st
 		}
 		return nil
 	}
-	if ev.Kind != model.EventText || ev.Message == nil || *ev.Message == "" {
+	payload, ok := buildSlackOutboundPayload(ev, remoteID)
+	if !ok {
 		return nil
 	}
-	return s.callChatPostMessage(remoteID, *ev.Message)
-}
-
-func (s *slackRuntime) callChatPostMessage(channelID, text string) error {
-	body := strings.NewReader(fmt.Sprintf(`{"channel":%q,"text":%q}`, channelID, text))
-	req, err := http.NewRequest(http.MethodPost, "https://slack.com/api/chat.postMessage", body)
+	ts, err := s.callChatPostMessage(payload)
 	if err != nil {
 		return err
+	}
+	return s.recordOutboundSlackRef(ev, ts)
+}
+
+func buildSlackOutboundPayload(ev model.Event, channelID string) (map[string]any, bool) {
+	if ev.Message == nil || strings.TrimSpace(*ev.Message) == "" {
+		return nil, false
+	}
+	text := *ev.Message
+	switch ev.Kind {
+	case model.EventText, model.EventBot:
+	case model.EventAction:
+		text = "/me " + text
+	default:
+		return nil, false
+	}
+
+	payload := map[string]any{"channel": channelID, "text": text}
+	if ev.Kind == model.EventBot {
+		if ev.Username != nil && strings.TrimSpace(*ev.Username) != "" {
+			payload["username"] = *ev.Username
+		}
+		if ev.AvatarURL != nil && strings.TrimSpace(*ev.AvatarURL) != "" {
+			payload["icon_url"] = *ev.AvatarURL
+		}
+	}
+	if ev.Thread != nil && ev.Thread.SlackThreadTS != nil && strings.TrimSpace(*ev.Thread.SlackThreadTS) != "" {
+		payload["thread_ts"] = *ev.Thread.SlackThreadTS
+	}
+	if meta := buildSlackForwardMetadata(ev); len(meta) > 0 {
+		payload["metadata"] = map[string]any{"event_type": "pipo.forwarded", "event_payload": meta}
+	}
+	return payload, true
+}
+
+func buildSlackForwardMetadata(ev model.Event) map[string]any {
+	out := map[string]any{}
+	if ev.PipoID != nil {
+		out["pipo_id"] = *ev.PipoID
+	}
+	if ev.Thread != nil {
+		if ev.Thread.SlackThreadTS != nil && strings.TrimSpace(*ev.Thread.SlackThreadTS) != "" {
+			out["thread_slack_ts"] = *ev.Thread.SlackThreadTS
+		}
+		if ev.Thread.DiscordThread != nil {
+			out["thread_discord"] = *ev.Thread.DiscordThread
+		}
+	}
+	if len(ev.Attachments) > 0 {
+		out["attachments"] = ev.Attachments
+	}
+	if len(ev.Metadata) > 0 {
+		out["metadata"] = ev.Metadata
+	}
+	return out
+}
+
+func (s *slackRuntime) callChatPostMessage(payload map[string]any) (string, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://slack.com/api/chat.postMessage", strings.NewReader(string(body)))
+	if err != nil {
+		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+s.botToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.http.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
-		return fmt.Errorf("chat.postMessage status %d", resp.StatusCode)
+		return "", fmt.Errorf("chat.postMessage status %d", resp.StatusCode)
 	}
-	return nil
+	var out struct {
+		OK      bool   `json:"ok"`
+		Error   string `json:"error"`
+		TS      string `json:"ts"`
+		Message struct {
+			TS string `json:"ts"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if !out.OK {
+		return "", fmt.Errorf("chat.postMessage failed: %s", out.Error)
+	}
+	return firstNonEmptySlack(out.TS, out.Message.TS), nil
+}
+
+func (s *slackRuntime) recordOutboundSlackRef(ev model.Event, slackID string) error {
+	if s.store == nil || strings.TrimSpace(slackID) == "" {
+		return nil
+	}
+	ctx := context.Background()
+	if ev.PipoID != nil {
+		return s.store.UpdateSlackByID(ctx, *ev.PipoID, slackID)
+	}
+	_, err := s.store.InsertOrReplaceSlack(ctx, slackID)
+	return err
 }
 
 func (s *slackRuntime) displayNameForUser(userID string) string {
