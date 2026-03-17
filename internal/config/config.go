@@ -33,6 +33,8 @@ type Transport struct {
 	ImgRoot             string            `json:"img_root,omitempty"`
 	Token               string            `json:"token,omitempty"`
 	BotToken            string            `json:"bot_token,omitempty"`
+	SlackAppToken       string            `json:"slack_app_token,omitempty"`
+	SlackBotToken       string            `json:"slack_bot_token,omitempty"`
 	GuildID             uint64            `json:"guild_id,omitempty"`
 	Username            string            `json:"username,omitempty"`
 	Password            *string           `json:"password"`
@@ -172,17 +174,40 @@ func decodeTransport(raw []byte, index int) (Transport, error) {
 	case "Slack":
 		var cfg struct {
 			Kind           string            `json:"transport"`
-			Token          string            `json:"token"`
-			BotToken       string            `json:"bot_token"`
+			Token          *string           `json:"token"`
+			BotToken       *string           `json:"bot_token"`
+			SlackAppToken  *string           `json:"slack_app_token"`
+			SlackBotToken  *string           `json:"slack_bot_token"`
 			ChannelMapping map[string]string `json:"channel_mapping"`
 		}
 		if err := decodeStrict(raw, &cfg); err != nil {
 			return Transport{}, fmt.Errorf("%s (Slack): %w", prefix, err)
 		}
-		if err := requireFields(fields, map[string]bool{"token": false, "bot_token": false, "channel_mapping": false}); err != nil {
+		if err := requireFields(fields, map[string]bool{"channel_mapping": false}); err != nil {
 			return Transport{}, fmt.Errorf("%s (Slack): %w", prefix, err)
 		}
-		t.Token, t.BotToken, t.ChannelMapping = cfg.Token, cfg.BotToken, cfg.ChannelMapping
+		if cfg.Token != nil {
+			t.Token = *cfg.Token
+		}
+		if cfg.BotToken != nil {
+			t.BotToken = *cfg.BotToken
+		}
+		if cfg.SlackAppToken != nil {
+			t.SlackAppToken = *cfg.SlackAppToken
+		}
+		if cfg.SlackBotToken != nil {
+			t.SlackBotToken = *cfg.SlackBotToken
+		}
+		if strings.TrimSpace(t.SlackAppToken) == "" {
+			t.SlackAppToken = t.Token
+		}
+		if strings.TrimSpace(t.SlackBotToken) == "" {
+			t.SlackBotToken = t.BotToken
+		}
+		if strings.TrimSpace(t.SlackAppToken) == "" || strings.TrimSpace(t.SlackBotToken) == "" {
+			return Transport{}, fmt.Errorf("%s (Slack): must provide slack_app_token/slack_bot_token (or token/bot_token)", prefix)
+		}
+		t.ChannelMapping = cfg.ChannelMapping
 	case "Minecraft":
 		var cfg struct {
 			Kind     string   `json:"transport"`

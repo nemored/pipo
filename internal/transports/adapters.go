@@ -52,6 +52,9 @@ func (t *transportAdapter) Run(ctx context.Context, api core.RuntimeAPI) error {
 			if ctx.Err() != nil {
 				return nil
 			}
+			if isTerminal(err) {
+				return err
+			}
 			if !sleepWithContext(ctx, backoff) {
 				return nil
 			}
@@ -171,12 +174,6 @@ func consumeOnlySession(buses []string, logger *slog.Logger, m *telemetry.Metric
 		wg.Wait()
 		return nil
 	}
-}
-
-func buildSlack(idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.Logger, m *telemetry.Metrics) core.Transport {
-	t := baseAdapter("Slack", idx, tc, s, logger, m)
-	t.connectFn = func(context.Context) error { return nil }
-	return t
 }
 
 func buildDiscord(idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.Logger, m *telemetry.Metrics) core.Transport {
