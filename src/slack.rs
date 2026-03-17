@@ -64,6 +64,18 @@ struct WebSocket {
 }
 
 impl Slack {
+    fn append_rich_text_fragment(acc: &mut String, fragment: &str) {
+        if fragment.is_empty() {
+            return;
+        }
+
+        if !acc.is_empty() && !acc.ends_with('\n') && !fragment.starts_with('\n') {
+            acc.push('\n');
+        }
+
+        acc.push_str(fragment);
+    }
+
     pub async fn new(
         transport_id: usize,
         bus_map: &HashMap<String, broadcast::Sender<Message>>,
@@ -1136,7 +1148,7 @@ impl Slack {
             header::AUTHORIZATION,
             ("Bearer ".to_owned() + &self.bot_token).parse()?,
         );
-        
+
         let url = reqwest::Url::parse_with_params(
             "https://slack.com/api/users.profile.get",
             &[("user", user_id.clone())],
@@ -1429,11 +1441,9 @@ impl Slack {
                                 block_id: _,
                                 elements,
                             } => {
-                                // rich_text concatenates all elements into
-                                // a String.
                                 for element in elements.iter() {
-                                    rich_text
-                                        .push_str(&self.convert_element_to_string(element).await?);
+                                    let fragment = self.convert_element_to_string(element).await?;
+                                    Slack::append_rich_text_fragment(&mut rich_text, &fragment);
                                 }
                             }
                             _ => continue,
@@ -2485,7 +2495,8 @@ impl Slack {
             format!("Bearer {}", self.bot_token).parse()?,
         );
 
-        let url = reqwest::Url::parse_with_params("https://slack.com/api/users.info", &[("user", user)])?;
+        let url =
+            reqwest::Url::parse_with_params("https://slack.com/api/users.info", &[("user", user)])?;
 
         let response = self
             .http
@@ -2576,5 +2587,231 @@ impl RichTextResolver for Slack {
 
     fn resolve_channel_name(&self, channel_id: &str) -> Option<String> {
         self.id_map.get(channel_id).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deadpool_sqlite::{Config, Runtime};
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    fn append_fragments(fragments: &[&str]) -> String {
+        let mut out = String::new();
+        for fragment in fragments {
+            Slack::append_rich_text_fragment(&mut out, fragment);
+        }
+        out
+    }
+
+    async fn make_test_slack() -> (Slack, broadcast::Receiver<Message>) {
+        let pool = Config::new(":memory:")
+            .create_pool(Runtime::Tokio1)
+            .expect("pool");
+
+        pool.get()
+            .await
+            .expect("conn")
+            .interact(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE messages (
+                        id        INTEGER PRIMARY KEY,
+                        slackid   TEXT,
+                        discordid INTEGER,
+                        modtime   TEXT
+                    );",
+                )
+            })
+            .await
+            .expect("interact")
+            .expect("create messages table");
+
+        let (sender, receiver) = broadcast::channel(8);
+        let mut bus_map = HashMap::new();
+        bus_map.insert("main".to_string(), sender);
+
+        let mut channel_mapping: HashMap<Arc<String>, Arc<String>> = HashMap::new();
+        channel_mapping.insert(Arc::new("#test".to_string()), Arc::new("main".to_string()));
+
+        let mut slack = Slack::new(
+            1,
+            &bus_map,
+            Arc::new(Mutex::new(1)),
+            pool,
+            "xapp-token".to_string(),
+            "xoxb-token".to_string(),
+            true,
+            &channel_mapping,
+        )
+        .await
+        .expect("slack");
+
+        slack.id_map.insert("C123".to_string(), "#test".to_string());
+
+        (slack, receiver)
+    }
+
+    #[test]
+    fn append_rich_text_fragment_adds_newline_only_at_boundaries() {
+        let joined = append_fragments(&["> q1", "line2"]);
+        assert_eq!(joined, "> q1\nline2");
+
+        let already_separated = append_fragments(&["> q1\n", "line2"]);
+        assert_eq!(already_separated, "> q1\nline2");
+
+        let leading_newline_fragment = append_fragments(&["> q1", "\nline2"]);
+        assert_eq!(leading_newline_fragment, "> q1\nline2");
+
+        let inline_only = append_fragments(&["hello", " world"]);
+        assert_eq!(inline_only, "hello\n world");
+    }
+
+    #[tokio::test]
+    async fn handle_event_rich_text_quote_then_section_has_boundary_newline() {
+        let (mut slack, mut receiver) = make_test_slack().await;
+
+        let event = Event::Message(SlackMessage {
+            subtype: Some("bot_message".to_string()),
+            hidden: Some(false),
+            message: None,
+            bot_id: None,
+            client_msg_id: None,
+            text: None,
+            files: None,
+            upload: None,
+            user: None,
+            display_as_bot: None,
+            ts: Some("1700000000.100001".to_string()),
+            deleted_ts: None,
+            team: None,
+            attachments: None,
+            blocks: Some(vec![Block::RichText {
+                block_id: None,
+                elements: vec![
+                    Element::RichTextQuote {
+                        elements: vec![Element::Text {
+                            text: "q1".to_string(),
+                            style: None,
+                        }],
+                    },
+                    Element::RichTextSection {
+                        elements: vec![Element::Text {
+                            text: "line2".to_string(),
+                            style: None,
+                        }],
+                    },
+                ],
+            }]),
+            channel: Some("C123".to_string()),
+            previous_message: None,
+            event_ts: None,
+            thread_ts: None,
+            channel_type: None,
+            edited: None,
+        });
+
+        slack
+            .handle_event(event, false)
+            .await
+            .expect("handle event");
+
+        let outbound = timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("recv timeout")
+            .expect("recv message");
+
+        match outbound {
+            Message::Bot { message, .. } => {
+                assert_eq!(message.as_deref(), Some("> q1\nline2"));
+            }
+            other => panic!("unexpected outbound message: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_event_rich_text_list_sequence_preserves_boundaries() {
+        let (mut slack, mut receiver) = make_test_slack().await;
+
+        let event = Event::Message(SlackMessage {
+            subtype: Some("bot_message".to_string()),
+            hidden: Some(false),
+            message: None,
+            bot_id: None,
+            client_msg_id: None,
+            text: None,
+            files: None,
+            upload: None,
+            user: None,
+            display_as_bot: None,
+            ts: Some("1700000000.100002".to_string()),
+            deleted_ts: None,
+            team: None,
+            attachments: None,
+            blocks: Some(vec![Block::RichText {
+                block_id: None,
+                elements: vec![
+                    Element::RichTextList {
+                        elements: vec![Element::RichTextSection {
+                            elements: vec![Element::Text {
+                                text: "item 1".to_string(),
+                                style: None,
+                            }],
+                        }],
+                        style: "bullet".to_string(),
+                        indent: 0,
+                        border: None,
+                    },
+                    Element::RichTextList {
+                        elements: vec![Element::RichTextSection {
+                            elements: vec![Element::Text {
+                                text: "nested 1".to_string(),
+                                style: None,
+                            }],
+                        }],
+                        style: "ordered".to_string(),
+                        indent: 1,
+                        border: None,
+                    },
+                    Element::RichTextList {
+                        elements: vec![Element::RichTextSection {
+                            elements: vec![Element::Text {
+                                text: "item 2".to_string(),
+                                style: None,
+                            }],
+                        }],
+                        style: "bullet".to_string(),
+                        indent: 0,
+                        border: None,
+                    },
+                ],
+            }]),
+            channel: Some("C123".to_string()),
+            previous_message: None,
+            event_ts: None,
+            thread_ts: None,
+            channel_type: None,
+            edited: None,
+        });
+
+        slack
+            .handle_event(event, false)
+            .await
+            .expect("handle event");
+
+        let outbound = timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("recv timeout")
+            .expect("recv message");
+
+        match outbound {
+            Message::Bot { message, .. } => {
+                assert_eq!(
+                    message.as_deref(),
+                    Some("- item 1\n  1. nested 1\n- item 2")
+                );
+            }
+            other => panic!("unexpected outbound message: {other:?}"),
+        }
     }
 }
