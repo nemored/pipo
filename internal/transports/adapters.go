@@ -199,7 +199,7 @@ func buildIRC(idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.L
 		return nil
 	}
 	t.sessionFn = func(ctx context.Context, api core.RuntimeAPI) error {
-		err := state.runSession(ctx, api, t.remoteToChannel, t.transportID)
+		err := state.runSession(ctx, api, t.remoteToChannel, t.channelToRemote, t.transportID)
 		state.close()
 		if errors.Is(err, errReconnect) {
 			if logger != nil {

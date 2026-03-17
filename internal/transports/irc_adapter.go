@@ -138,8 +138,12 @@ func (i *ircRuntime) register(ctx context.Context) error {
 	return nil
 }
 
-func (i *ircRuntime) runSession(ctx context.Context, api core.RuntimeAPI, remoteToChannel map[string]string, transportID int) error {
+func (i *ircRuntime) runSession(ctx context.Context, api core.RuntimeAPI, remoteToChannel, channelToRemote map[string]string, transportID int) error {
 	i.joinMappedChannels(remoteToChannel)
+	subs, err := i.subscribeOutbound(ctx, api, remoteToChannel)
+	if err != nil {
+		return err
+	}
 	lastActivity := time.Now()
 	lastPing := time.Time{}
 	for {
@@ -150,6 +154,7 @@ func (i *ircRuntime) runSession(ctx context.Context, api core.RuntimeAPI, remote
 		line, err := i.readLine()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				i.drainOutbound(subs, channelToRemote, transportID)
 				if time.Since(lastActivity) > ircPingInterval && time.Since(lastPing) > ircPingInterval {
 					lastPing = time.Now()
 					if err := i.sendRaw("PING :pipo"); err != nil {
@@ -175,6 +180,7 @@ func (i *ircRuntime) runSession(ctx context.Context, api core.RuntimeAPI, remote
 			}
 			return err
 		}
+		i.drainOutbound(subs, channelToRemote, transportID)
 		lastActivity = time.Now()
 		if err := i.handleLine(api, remoteToChannel, transportID, line); err != nil {
 			if err == errReconnect {
@@ -184,6 +190,76 @@ func (i *ircRuntime) runSession(ctx context.Context, api core.RuntimeAPI, remote
 				i.logger.Warn("irc dispatch error", "error", err)
 			}
 		}
+	}
+}
+
+func (i *ircRuntime) subscribeOutbound(ctx context.Context, api core.RuntimeAPI, remoteToChannel map[string]string) (map[string]<-chan model.Event, error) {
+	subs := make(map[string]<-chan model.Event, len(remoteToChannel))
+	seenBus := map[string]struct{}{}
+	for _, busID := range remoteToChannel {
+		if _, ok := seenBus[busID]; ok {
+			continue
+		}
+		seenBus[busID] = struct{}{}
+		sub, err := api.Subscribe(ctx, busID, 64)
+		if err != nil {
+			return nil, fmt.Errorf("subscribe outbound bus %q: %w", busID, err)
+		}
+		subs[busID] = sub
+	}
+	return subs, nil
+}
+
+func (i *ircRuntime) drainOutbound(subs map[string]<-chan model.Event, channelToRemote map[string]string, transportID int) {
+	for busID, sub := range subs {
+		for {
+			select {
+			case ev, ok := <-sub:
+				if !ok {
+					delete(subs, busID)
+					goto nextBus
+				}
+				if err := i.forwardOutboundEvent(busID, channelToRemote, transportID, ev); err != nil && i.logger != nil {
+					i.logger.Warn("irc outbound forwarding failed", "bus_id", busID, "error", err)
+				}
+			default:
+				goto nextBus
+			}
+		}
+	nextBus:
+	}
+}
+
+func (i *ircRuntime) forwardOutboundEvent(busID string, channelToRemote map[string]string, transportID int, ev model.Event) error {
+	if ev.Sender == transportID {
+		return nil
+	}
+	remote, ok := channelToRemote[busID]
+	if !ok {
+		return nil
+	}
+	payload, ok := formatIRCOutboundMessage(ev)
+	if !ok {
+		return nil
+	}
+	return i.sendRaw(fmt.Sprintf("PRIVMSG %s :%s", remote, payload))
+}
+
+func formatIRCOutboundMessage(ev model.Event) (string, bool) {
+	if ev.Message == nil {
+		return "", false
+	}
+	msg := *ev.Message
+	if msg == "" {
+		return "", false
+	}
+	switch ev.Kind {
+	case model.EventAction:
+		return "\x01ACTION " + msg + "\x01", true
+	case model.EventText:
+		return msg, true
+	default:
+		return "", false
 	}
 }
 
@@ -305,8 +381,92 @@ func (i *ircRuntime) handleLine(api core.RuntimeAPI, remoteToChannel map[string]
 		}
 		i.commitNamesBuf(channel)
 		return i.publishMemberSnapshot(api, channel, busID, transportID, i.activeNick)
+	case "PRIVMSG":
+		prefix, params, trailing := parseIRCLine(line)
+		if len(params) == 0 {
+			return nil
+		}
+		channel := params[0]
+		busID, ok := remoteToChannel[channel]
+		if !ok {
+			i.logUnmapped("PRIVMSG", channel)
+			return nil
+		}
+		nick := nickFromPrefix(prefix)
+		if nick == "" {
+			nick = "unknown"
+		}
+		return i.publishIRCMessage(api, transportID, busID, nick, trailing)
+	case "NOTICE":
+		prefix, params, trailing := parseIRCLine(line)
+		if len(params) == 0 {
+			return nil
+		}
+		channel := params[0]
+		if _, ok := remoteToChannel[channel]; !ok {
+			i.logUnmapped("NOTICE", channel)
+			return nil
+		}
+		nick := nickFromPrefix(prefix)
+		if nick == "" {
+			nick = "unknown"
+		}
+		if ctcp, ok := parseCTCP(trailing); ok {
+			if ctcp.Kind != ctcpAction {
+				if i.logger != nil {
+					i.logger.Debug("ignoring unsupported CTCP notice", "nick", nick, "channel", channel, "command", ctcp.Command, "raw", trailing)
+				}
+			}
+		}
 	}
 	return nil
+}
+
+func (i *ircRuntime) publishIRCMessage(api core.RuntimeAPI, transportID int, busID, nick, raw string) error {
+	ctcp, isCTCP := parseCTCP(raw)
+	if isCTCP {
+		if ctcp.Kind != ctcpAction {
+			if i.logger != nil {
+				i.logger.Debug("ignoring unsupported CTCP privmsg", "nick", nick, "bus_id", busID, "command", ctcp.Command, "raw", raw)
+			}
+			return nil
+		}
+		event := model.Event{Kind: model.EventAction, Sender: transportID, Source: model.SourceRef{Transport: "IRC", BusID: busID}, Username: stringPtr(nick), Message: stringPtr(ctcp.Body), CreatedAt: time.Now()}
+		return api.Publish(busID, event)
+	}
+	event := model.Event{Kind: model.EventText, Sender: transportID, Source: model.SourceRef{Transport: "IRC", BusID: busID}, Username: stringPtr(nick), Message: stringPtr(raw), CreatedAt: time.Now()}
+	return api.Publish(busID, event)
+}
+
+type ctcpKind string
+
+const (
+	ctcpAction      ctcpKind = "ACTION"
+	ctcpUnsupported ctcpKind = "UNSUPPORTED"
+)
+
+type ctcpMessage struct {
+	Kind    ctcpKind
+	Command string
+	Body    string
+}
+
+func parseCTCP(raw string) (ctcpMessage, bool) {
+	if len(raw) < 2 || raw[0] != '\x01' || raw[len(raw)-1] != '\x01' {
+		return ctcpMessage{}, false
+	}
+	payload := raw[1 : len(raw)-1]
+	if payload == "" {
+		return ctcpMessage{Kind: ctcpUnsupported, Command: ""}, true
+	}
+	command, body, hasBody := strings.Cut(payload, " ")
+	if strings.EqualFold(command, string(ctcpAction)) {
+		if !hasBody {
+			body = ""
+		}
+		return ctcpMessage{Kind: ctcpAction, Command: "ACTION", Body: body}, true
+	}
+	return ctcpMessage{Kind: ctcpUnsupported, Command: strings.ToUpper(command), Body: body}, true
 }
 
 func (i *ircRuntime) joinMappedChannels(remoteToChannel map[string]string) {
