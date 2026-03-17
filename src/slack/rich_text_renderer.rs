@@ -648,6 +648,48 @@ mod tests {
             .collect()
     }
 
+    async fn render_payload_rich_text(
+        payload: &super::super::objects::EventPayload,
+    ) -> Result<Option<String>> {
+        use super::super::objects::{Block, Event, EventPayload};
+
+        let EventPayload::EventCallback { event, .. } = payload else {
+            return Ok(None);
+        };
+        let Event::Message(message) = event else {
+            return Ok(None);
+        };
+        let Some(blocks) = message.blocks.as_ref() else {
+            return Ok(None);
+        };
+
+        let mut resolver = TestResolver;
+        let mut rich_text = String::new();
+
+        for block in blocks.iter() {
+            if let Block::RichText { elements, .. } = block {
+                for element in elements.iter() {
+                    let fragment = render(&mut resolver, element, RenderOptions::default()).await?;
+                    if !fragment.is_empty() {
+                        if !rich_text.is_empty()
+                            && !rich_text.ends_with('\n')
+                            && !fragment.starts_with('\n')
+                        {
+                            rich_text.push('\n');
+                        }
+                        rich_text.push_str(&fragment);
+                    }
+                }
+            }
+        }
+
+        if rich_text.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(rich_text))
+        }
+    }
+
     #[tokio::test]
     async fn slack_rich_text_conformance_suite_matches_goldens() {
         let fixtures_dir = conformance_fixture_dir();
@@ -656,7 +698,12 @@ mod tests {
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| {
                 let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                if path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                    && !path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".payload.json"))
+                {
                     Some(path)
                 } else {
                     None
@@ -699,6 +746,62 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn payload_regression_fixtures_match_goldens() {
+        let fixtures_dir = conformance_fixture_dir();
+        let mut fixtures = fs::read_dir(&fixtures_dir)
+            .expect("fixture directory should exist")
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".payload.json"))
+                {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        fixtures.sort();
+
+        assert!(
+            !fixtures.is_empty(),
+            "payload regression fixtures should not be empty"
+        );
+
+        for json_path in fixtures {
+            let fixture = fs::read_to_string(&json_path).expect("fixture json should be readable");
+            let payload: super::super::objects::EventPayload = serde_json::from_str(&fixture)
+                .expect("payload fixture json should deserialize into EventPayload");
+
+            let golden_name = json_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("fixture name should be valid utf8")
+                .replace(".payload.json", ".golden");
+            let golden_path = json_path.with_file_name(golden_name);
+            let expected = fs::read_to_string(&golden_path)
+                .expect("golden fixture should be readable")
+                .trim_end_matches('\n')
+                .to_string();
+
+            let rendered = render_payload_rich_text(&payload)
+                .await
+                .expect("payload fixture should render")
+                .expect("payload fixture should include renderable rich text");
+
+            assert_eq!(
+                rendered,
+                expected,
+                "render mismatch for fixture {}",
+                json_path.display()
+            );
+        }
+    }
+
     #[test]
     fn compatibility_matrix_covers_conformance_fixtures() {
         let fixtures_dir = conformance_fixture_dir();
@@ -707,7 +810,12 @@ mod tests {
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| {
                 let path = entry.path();
-                (path.extension().and_then(|ext| ext.to_str()) == Some("json")).then_some(path)
+                (path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                    && !path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".payload.json")))
+                .then_some(path)
             })
             .collect::<Vec<_>>();
 

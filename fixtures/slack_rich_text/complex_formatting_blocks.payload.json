@@ -1,0 +1,61 @@
+{
+  "type": "event_callback",
+  "token": "sanitized",
+  "team_id": "T01",
+  "api_app_id": "A01",
+  "event": {
+    "type": "message",
+    "channel": "C01",
+    "user": "U01",
+    "ts": "1710000000.000100",
+    "event_ts": "1710000000.000100",
+    "text": "fallback",
+    "blocks": [
+      {
+        "type": "rich_text",
+        "elements": [
+          {
+            "type": "rich_text_quote",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  { "type": "text", "text": "Context" },
+                  { "type": "text", "text": "\n" },
+                  {
+                    "type": "rich_text_list",
+                    "style": "ordered",
+                    "indent": 0,
+                    "elements": [
+                      {
+                        "type": "rich_text_section",
+                        "elements": [{ "type": "text", "text": "first" }]
+                      },
+                      {
+                        "type": "rich_text_section",
+                        "elements": [{ "type": "text", "text": "second" }]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "event_id": "EvComplex1",
+  "event_time": 1710000000,
+  "authorizations": [
+    {
+      "enterprise_id": null,
+      "team_id": "T01",
+      "user_id": "Ubot",
+      "is_bot": true,
+      "is_enterprise_install": false
+    }
+  ],
+  "is_ext_shared_channel": false,
+  "event_context": "EC01"
+}

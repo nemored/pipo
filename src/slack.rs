@@ -29,7 +29,7 @@ use crate::Message;
 
 mod entity_resolver;
 pub mod objects;
-mod rich_text_renderer;
+pub mod rich_text_renderer;
 use entity_resolver::{
     format_broadcast, format_channel, format_link, format_team, format_user, format_usergroup,
     parse_entity_reference, EntityReference,
@@ -3237,9 +3237,15 @@ mod tests {
         Slack::redact_json_path(&mut payload, &["event", "user", "profile", "image_48"]);
         Slack::redact_json_path(&mut payload, &["event", "token"]);
 
-        assert_eq!(payload["event"]["user"]["profile"]["image_48"], "[REDACTED]");
+        assert_eq!(
+            payload["event"]["user"]["profile"]["image_48"],
+            "[REDACTED]"
+        );
         assert_eq!(payload["event"]["token"], "[REDACTED]");
-        assert_eq!(payload["event"]["user"]["profile"]["email"], "user@example.com");
+        assert_eq!(
+            payload["event"]["user"]["profile"]["email"],
+            "user@example.com"
+        );
     }
 
     #[test]
@@ -3258,5 +3264,4 @@ mod tests {
         assert_eq!(payload["event"]["blocks"][0]["token"], "[REDACTED]");
         assert_eq!(payload["event"]["blocks"][1]["token"], "[REDACTED]");
     }
-
 }
