@@ -1585,7 +1585,7 @@ impl Slack {
                     None => false,
                 };
                 let channel = match channel_id.as_ref() {
-                    Some(channel) => match self.id_map.get(&channel) {
+                    Some(channel) => match self.id_map.get(channel) {
                         Some(channel) => channel.to_owned(),
                         None => {
                             return Err(anyhow!(
