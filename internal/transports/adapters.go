@@ -187,7 +187,27 @@ func buildDiscord(idx int, tc config.Transport, s *store.SQLiteStore, logger *sl
 
 func buildIRC(idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.Logger, m *telemetry.Metrics) core.Transport {
 	t := baseAdapter("IRC", idx, tc, s, logger, m)
-	t.connectFn = func(context.Context) error { return nil }
+	state := newIRCRuntime(tc, logger)
+	t.connectFn = func(ctx context.Context) error {
+		if err := state.connect(ctx); err != nil {
+			return err
+		}
+		if err := state.register(ctx); err != nil {
+			state.close()
+			return err
+		}
+		return nil
+	}
+	t.sessionFn = func(ctx context.Context, api core.RuntimeAPI) error {
+		err := state.runSession(ctx, api, t.buses)
+		state.close()
+		if errors.Is(err, errReconnect) {
+			if logger != nil {
+				logger.Info("irc lifecycle phase", "phase", "reconnect", "transport", t.name)
+			}
+		}
+		return err
+	}
 	return t
 }
 

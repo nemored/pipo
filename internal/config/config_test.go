@@ -63,6 +63,24 @@ func TestLoadValidationMessagesPerTransport(t *testing.T) {
 	}
 }
 
+func TestLoadIRCOptionalConnectionFields(t *testing.T) {
+	path := writeConfig(t, `{
+"buses": [{"id": "main"}],
+"transports": [
+  {"transport":"IRC","nickname":"n","server":"irc.example","port":7000,"timeout_seconds":12,"pass":"sekret","use_tls":true,"img_root":"i","channel_mapping":{"main":"#chan"}}
+]
+}`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	irc := cfg.Transports[0]
+	if irc.IRCServerPort != 7000 || irc.IRCTimeoutSeconds != 12 || irc.IRCPass != "sekret" {
+		t.Fatalf("expected optional IRC connection fields to be parsed, got port=%d timeout=%d pass=%q", irc.IRCServerPort, irc.IRCTimeoutSeconds, irc.IRCPass)
+	}
+}
+
 func TestLoadRejectsUnknownTransportField(t *testing.T) {
 	path := writeConfig(t, `{
 "buses": [{"id": "main"}],
