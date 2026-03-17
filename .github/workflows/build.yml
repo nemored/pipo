@@ -85,3 +85,34 @@ jobs:
         with:
           name: pipo-x86_64-linux
           path: target/x86_64-unknown-linux-gnu/release/pipo
+
+
+  release-debian12:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:12
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/feature/'))
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: install_deps
+        run: |
+          apt-get update
+          apt-get install -y curl build-essential pkg-config protobuf-compiler libsqlite3-dev ca-certificates
+
+      - name: Install Rust toolchain
+        run: |
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Add x86_64 target
+        run: rustup target add x86_64-unknown-linux-gnu
+
+      - name: Build release artifact (x86_64 Debian 12)
+        run: cargo build --locked --release --target x86_64-unknown-linux-gnu
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipo-x86_64-debian12
+          path: target/x86_64-unknown-linux-gnu/release/pipo
