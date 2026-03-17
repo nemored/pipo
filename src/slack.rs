@@ -1503,12 +1503,12 @@ impl Slack {
                 team_id: _,
                 api_app_id: _,
                 event,
-                event_id: _,
+                event_id,
                 event_time: _,
                 authorizations: _,
                 is_ext_shared_channel: _,
                 event_context: _,
-            } => self.handle_event(event, false).await,
+            } => self.handle_event(event, false, Some(event_id)).await,
             EventPayload::UrlVerification {
                 token: _,
                 challenge: _,
@@ -1545,7 +1545,12 @@ impl Slack {
     }
 
     #[async_recursion]
-    async fn handle_event(&mut self, event: Event, is_edit: bool) -> anyhow::Result<()> {
+    async fn handle_event(
+        &mut self,
+        event: Event,
+        is_edit: bool,
+        event_id: Option<String>,
+    ) -> anyhow::Result<()> {
         match event {
             Event::Message(SlackMessage {
                 subtype,
@@ -1570,6 +1575,7 @@ impl Slack {
                 channel_type: _,
                 edited,
             }) => {
+                let channel_id = channel;
                 let irc_flag = match edited {
                     Some(_) => false,
                     None => true,
@@ -1578,8 +1584,8 @@ impl Slack {
                     Some(b) => b,
                     None => false,
                 };
-                let channel = match channel {
-                    Some(channel) => match self.id_map.get(&channel) {
+                let channel = match channel_id.as_ref() {
+                    Some(channel) => match self.id_map.get(channel) {
                         Some(channel) => channel.to_owned(),
                         None => {
                             return Err(anyhow!(
@@ -1597,7 +1603,7 @@ impl Slack {
                     }
                 };
 
-                let rich_text = if let Some(blocks) = blocks {
+                let (rich_text, source_mode) = if let Some(blocks) = blocks {
                     let mut rich_text = String::new();
                     for block in blocks.iter() {
                         match block {
@@ -1614,13 +1620,34 @@ impl Slack {
                         }
                     }
 
-                    Some(rich_text)
+                    (Some(rich_text), "blocks_rich_text")
                 } else {
-                    match text {
-                        Some(text) => Some(self.parse_usernames(&text).await?),
-                        None => None,
-                    }
+                    (
+                        match text {
+                            Some(text) => Some(self.parse_usernames(&text).await?),
+                            None => None,
+                        },
+                        "plain_text_fallback",
+                    )
                 };
+
+                if let Err(error) = self
+                    .log_rendered_event(
+                        event_id.as_deref(),
+                        ts.as_deref(),
+                        source_mode,
+                        rich_text.as_deref(),
+                        attachments.as_ref().map_or(0, Vec::len),
+                        subtype.as_deref(),
+                        irc_flag,
+                        is_edit,
+                        channel_id.as_deref(),
+                        Some(channel.as_str()),
+                    )
+                    .await
+                {
+                    eprintln!("Failed to log rendered Slack message: {error}");
+                }
 
                 match subtype {
                     Some(subtype) => match subtype.as_str() {
@@ -1666,6 +1693,7 @@ impl Slack {
                                     message,
                                     prev_message,
                                     hidden,
+                                    event_id,
                                 )
                                 .await
                         }
@@ -1908,6 +1936,7 @@ impl Slack {
         message: Option<Box<Event>>,
         _previous_message: Option<Box<Event>>,
         hidden: bool,
+        event_id: Option<String>,
     ) -> anyhow::Result<()> {
         if message.is_none() {
             return Err(anyhow!("No updated message present in event."));
@@ -1968,7 +1997,78 @@ impl Slack {
             _ => return Err(anyhow!("message not an Event::Message")),
         };
 
-        self.handle_event(event, true).await
+        self.handle_event(event, true, event_id).await
+    }
+
+    async fn log_rendered_event(
+        &self,
+        event_id: Option<&str>,
+        ts: Option<&str>,
+        source_mode: &str,
+        rendered_text: Option<&str>,
+        attachment_count: usize,
+        subtype: Option<&str>,
+        irc_flag: bool,
+        is_edit: bool,
+        channel_id: Option<&str>,
+        channel_name: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let event_id = event_id.map(str::to_string);
+        let ts = ts.map(str::to_string);
+        let source_mode = source_mode.to_string();
+        let rendered_text = rendered_text.map(str::to_string);
+        let subtype = subtype.map(str::to_string);
+        let channel_id = channel_id.map(str::to_string);
+        let channel_name = channel_name.map(str::to_string);
+
+        self.pool
+            .get()
+            .await?
+            .interact(move |conn| {
+                conn.execute(
+                    "INSERT INTO slack_render_log (
+                        rendered_at,
+                        event_id,
+                        ts,
+                        source_mode,
+                        rendered_text,
+                        attachment_count,
+                        subtype,
+                        irc_flag,
+                        is_edit,
+                        channel_id,
+                        channel_name
+                    ) VALUES (
+                        strftime('%Y-%m-%d %H:%M:%f', 'now'),
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?
+                    )",
+                    params![
+                        event_id,
+                        ts,
+                        source_mode,
+                        rendered_text,
+                        attachment_count as i64,
+                        subtype,
+                        irc_flag as i64,
+                        is_edit as i64,
+                        channel_id,
+                        channel_name,
+                    ],
+                )
+            })
+            .await
+            .map_err(|e| anyhow!("interact error: {e}"))??;
+
+        Ok(())
     }
 
     async fn handle_message_deleted(
@@ -2784,6 +2884,20 @@ mod tests {
                         slackid   TEXT,
                         discordid INTEGER,
                         modtime   TEXT
+                    );
+                    CREATE TABLE slack_render_log (
+                        id                INTEGER PRIMARY KEY,
+                        rendered_at       TEXT,
+                        event_id          TEXT,
+                        ts                TEXT,
+                        source_mode       TEXT,
+                        rendered_text     TEXT,
+                        attachment_count  INTEGER,
+                        subtype           TEXT,
+                        irc_flag          INTEGER,
+                        is_edit           INTEGER,
+                        channel_id        TEXT,
+                        channel_name      TEXT
                     );",
                 )
             })
@@ -2876,7 +2990,7 @@ mod tests {
         });
 
         slack
-            .handle_event(event, false)
+            .handle_event(event, false, None)
             .await
             .expect("handle event");
 
@@ -2959,7 +3073,7 @@ mod tests {
         });
 
         slack
-            .handle_event(event, false)
+            .handle_event(event, false, None)
             .await
             .expect("handle event");
 
