@@ -3,6 +3,7 @@ package transports
 import (
 	"bufio"
 	"context"
+	"crypto/sha1"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/nemored/pipo/internal/config"
 	"github.com/nemored/pipo/internal/core"
 	"github.com/nemored/pipo/internal/model"
+	"github.com/nemored/pipo/internal/store"
 )
 
 const (
@@ -41,10 +43,11 @@ type ircRuntime struct {
 	compatMode      string
 	compatReactions bool
 	reactionPrefix  string
+	store           *store.SQLiteStore
 }
 
-func newIRCRuntime(cfg config.Transport, logger *slog.Logger) *ircRuntime {
-	return &ircRuntime{cfg: cfg, logger: logger, activeNick: cfg.Nickname, members: map[string]map[string]string{}, namesBuf: map[string]map[string]string{}, compatMode: normalizeIRCCompatMode(cfg.IRCCompatMode), compatReactions: cfg.IRCCompatReactions, reactionPrefix: normalizeReactionPrefix(cfg.IRCReactionPrefix)}
+func newIRCRuntime(cfg config.Transport, logger *slog.Logger, s *store.SQLiteStore) *ircRuntime {
+	return &ircRuntime{cfg: cfg, logger: logger, activeNick: cfg.Nickname, members: map[string]map[string]string{}, namesBuf: map[string]map[string]string{}, compatMode: normalizeIRCCompatMode(cfg.IRCCompatMode), compatReactions: cfg.IRCCompatReactions, reactionPrefix: normalizeReactionPrefix(cfg.IRCReactionPrefix), store: s}
 }
 
 func (i *ircRuntime) connect(ctx context.Context) error {
@@ -186,7 +189,7 @@ func (i *ircRuntime) runSession(ctx context.Context, api core.RuntimeAPI, remote
 		}
 		i.drainOutbound(subs, channelToRemote, transportID)
 		lastActivity = time.Now()
-		if err := i.handleLine(api, remoteToChannel, transportID, line); err != nil {
+		if err := i.handleLine(ctx, api, remoteToChannel, transportID, line); err != nil {
 			if err == errReconnect {
 				return errReconnect
 			}
@@ -267,7 +270,7 @@ func formatIRCOutboundMessage(ev model.Event) (string, bool) {
 	}
 }
 
-func (i *ircRuntime) handleLine(api core.RuntimeAPI, remoteToChannel map[string]string, transportID int, line string) error {
+func (i *ircRuntime) handleLine(ctx context.Context, api core.RuntimeAPI, remoteToChannel map[string]string, transportID int, line string) error {
 	switch ircCommand(line) {
 	case "PING":
 		if err := i.handlePing(line); err != nil {
@@ -386,6 +389,7 @@ func (i *ircRuntime) handleLine(api core.RuntimeAPI, remoteToChannel map[string]
 		i.commitNamesBuf(channel)
 		return i.publishMemberSnapshot(api, channel, busID, transportID, i.activeNick)
 	case "PRIVMSG":
+		tags := parseIRCTags(line)
 		prefix, params, trailing := parseIRCLine(line)
 		if len(params) == 0 {
 			return nil
@@ -400,7 +404,7 @@ func (i *ircRuntime) handleLine(api core.RuntimeAPI, remoteToChannel map[string]
 		if nick == "" {
 			nick = "unknown"
 		}
-		return i.publishIRCMessage(api, transportID, busID, nick, trailing)
+		return i.publishIRCMessage(ctx, api, transportID, busID, channel, nick, trailing, tags)
 	case "NOTICE":
 		prefix, params, trailing := parseIRCLine(line)
 		if len(params) == 0 {
@@ -426,7 +430,7 @@ func (i *ircRuntime) handleLine(api core.RuntimeAPI, remoteToChannel map[string]
 	return nil
 }
 
-func (i *ircRuntime) publishIRCMessage(api core.RuntimeAPI, transportID int, busID, nick, raw string) error {
+func (i *ircRuntime) publishIRCMessage(ctx context.Context, api core.RuntimeAPI, transportID int, busID, channel, nick, raw string, tags map[string]string) error {
 	ctcp, isCTCP := parseCTCP(raw)
 	if isCTCP {
 		if ctcp.Kind != ctcpAction {
@@ -438,8 +442,31 @@ func (i *ircRuntime) publishIRCMessage(api core.RuntimeAPI, transportID int, bus
 		event := model.Event{Kind: model.EventAction, Sender: transportID, Source: model.SourceRef{Transport: "IRC", BusID: busID}, Username: stringPtr(nick), Message: stringPtr(ctcp.Body), CreatedAt: time.Now()}
 		return api.Publish(busID, event)
 	}
-	base := model.Event{Kind: model.EventText, Sender: transportID, Source: model.SourceRef{Transport: "IRC", BusID: busID}, Username: stringPtr(nick), Message: stringPtr(raw), CreatedAt: time.Now()}
-	events := i.translateCompatEvent(base, raw)
+	network := i.cfg.Server
+	sourceKey, sourceToken, sourceTime := ircSourceIdentity(network, channel, nick, raw, tags)
+	base := model.Event{Kind: model.EventText, Sender: transportID, Source: model.SourceRef{Transport: "IRC", BusID: busID, MessageID: stringPtr(sourceKey)}, Username: stringPtr(nick), Message: stringPtr(raw), CreatedAt: time.Now()}
+	if i.store != nil {
+		id, inserted, err := i.store.EnsureIRCIdentity(ctx, store.IRCIdentityRecord{
+			SourceKey:    sourceKey,
+			Network:      network,
+			Channel:      channel,
+			Sender:       nick,
+			MessageToken: sourceToken,
+			MessageTime:  sourceTime,
+			MessageRaw:   stringPtr(raw),
+		})
+		if err != nil {
+			if i.logger != nil {
+				i.logger.Warn("irc identity persist failed", "source_key", sourceKey, "network", network, "channel", channel, "nick", nick, "error", err)
+			}
+		} else {
+			base.PipoID = &id
+			if i.logger != nil {
+				i.logger.Debug("irc identity resolved", "source_key", sourceKey, "pipo_id", id, "inserted", inserted)
+			}
+		}
+	}
+	events := i.translateCompatEvent(ctx, base, network, channel, raw)
 	for _, event := range events {
 		if err := api.Publish(busID, event); err != nil {
 			return err
@@ -474,7 +501,7 @@ func (i *ircRuntime) compatEnabled() bool {
 	return i.compatMode != "off"
 }
 
-func (i *ircRuntime) translateCompatEvent(base model.Event, raw string) []model.Event {
+func (i *ircRuntime) translateCompatEvent(ctx context.Context, base model.Event, network, channel, raw string) []model.Event {
 	if edit := ircEditPattern.FindStringSubmatch(raw); len(edit) == 3 {
 		if !i.compatEnabled() {
 			return []model.Event{i.newCompatAnnotation(base, "edit", "capability_disabled", raw)}
@@ -482,6 +509,7 @@ func (i *ircRuntime) translateCompatEvent(base model.Event, raw string) []model.
 		ev := base
 		ev.IsEdit = true
 		ev.Message = stringPtr(edit[2])
+		i.setCompatTargetPipoID(ctx, &ev, network, channel, edit[1])
 		ev.Metadata = compatMetadata("edit", i.compatMode, raw, map[string]string{"native": "false", "target_message_id": edit[1]})
 		return []model.Event{ev}
 	}
@@ -493,17 +521,18 @@ func (i *ircRuntime) translateCompatEvent(base model.Event, raw string) []model.
 		ev.Kind = model.EventDelete
 		ev.Message = nil
 		ev.Source.MessageID = stringPtr(del[1])
+		i.setCompatTargetPipoID(ctx, &ev, network, channel, del[1])
 		ev.Metadata = compatMetadata("delete", i.compatMode, raw, map[string]string{"native": "false", "target_message_id": del[1]})
 		return []model.Event{ev}
 	}
-	if reaction, ok := i.tryTranslateReaction(base, raw); ok {
+	if reaction, ok := i.tryTranslateReaction(ctx, base, network, channel, raw); ok {
 		return []model.Event{reaction}
 	}
 	base.Metadata = compatMetadata("none", "native", raw, map[string]string{"native": "true", "compat_generated": "false"})
 	return []model.Event{base}
 }
 
-func (i *ircRuntime) tryTranslateReaction(base model.Event, raw string) (model.Event, bool) {
+func (i *ircRuntime) tryTranslateReaction(ctx context.Context, base model.Event, network, channel, raw string) (model.Event, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.HasPrefix(trimmed, i.reactionPrefix) {
 		return model.Event{}, false
@@ -526,8 +555,86 @@ func (i *ircRuntime) tryTranslateReaction(base model.Event, raw string) (model.E
 	ev.Emoji = stringPtr(emoji)
 	ev.Remove = remove
 	ev.Source.MessageID = stringPtr(target)
+	i.setCompatTargetPipoID(ctx, &ev, network, channel, target)
 	ev.Metadata = compatMetadata("reaction", i.compatMode, raw, map[string]string{"native": "false", "target_message_id": target})
 	return ev, true
+}
+
+func (i *ircRuntime) setCompatTargetPipoID(ctx context.Context, ev *model.Event, network, channel, target string) {
+	if i.store == nil {
+		return
+	}
+	id, err := i.store.SelectPipoIDByIRCToken(ctx, network, channel, target)
+	if err != nil {
+		if i.logger != nil {
+			i.logger.Warn("irc compat target lookup failed", "network", network, "channel", channel, "target", target, "error", err)
+		}
+		return
+	}
+	if id != nil {
+		ev.PipoID = id
+	}
+}
+
+func parseIRCTags(line string) map[string]string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "@") {
+		return nil
+	}
+	space := strings.Index(trimmed, " ")
+	if space <= 1 {
+		return nil
+	}
+	tagPart := trimmed[1:space]
+	pieces := strings.Split(tagPart, ";")
+	tags := make(map[string]string, len(pieces))
+	for _, p := range pieces {
+		if p == "" {
+			continue
+		}
+		k, v, has := strings.Cut(p, "=")
+		if has {
+			tags[k] = v
+			continue
+		}
+		tags[k] = ""
+	}
+	return tags
+}
+
+func ircSourceIdentity(network, channel, nick, raw string, tags map[string]string) (string, *string, *string) {
+	token := firstNonEmpty(tags["msgid"], tags["message-id"], tags["draft/msgid"])
+	ts := firstNonEmpty(tags["time"], tags["server-time"], tags["tmi-sent-ts"])
+	keyParts := []string{strings.ToLower(strings.TrimSpace(network)), strings.ToLower(strings.TrimSpace(channel)), strings.ToLower(strings.TrimSpace(nick))}
+	if token != "" {
+		keyParts = append(keyParts, "token="+token)
+	}
+	if ts != "" {
+		keyParts = append(keyParts, "time="+ts)
+	}
+	if token == "" && ts == "" {
+		hash := sha1.Sum([]byte(strings.TrimSpace(raw)))
+		keyParts = append(keyParts, fmt.Sprintf("raw_sha1=%x", hash))
+	}
+	key := strings.Join(keyParts, "|")
+	return key, nilIfEmpty(token), nilIfEmpty(ts)
+}
+
+func nilIfEmpty(v string) *string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	return &v
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func (i *ircRuntime) newCompatAnnotation(base model.Event, op, reason, raw string) model.Event {

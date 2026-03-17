@@ -187,7 +187,7 @@ func buildDiscord(idx int, tc config.Transport, s *store.SQLiteStore, logger *sl
 
 func buildIRC(idx int, tc config.Transport, s *store.SQLiteStore, logger *slog.Logger, m *telemetry.Metrics) core.Transport {
 	t := baseAdapter("IRC", idx, tc, s, logger, m)
-	state := newIRCRuntime(tc, logger)
+	state := newIRCRuntime(tc, logger, s)
 	t.connectFn = func(ctx context.Context) error {
 		if err := state.connect(ctx); err != nil {
 			return err

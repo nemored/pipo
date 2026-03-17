@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 )
@@ -128,3 +129,67 @@ func TestInsertAllocatedIDRachniReturnsPostIncrementValue(t *testing.T) {
 		t.Fatalf("expected inserted row with id=1")
 	}
 }
+
+func TestEnsureIRCIdentityIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer s.Close()
+
+	rec := IRCIdentityRecord{
+		SourceKey:    "irc.example|#chan|alice|token=abc",
+		Network:      "irc.example",
+		Channel:      "#chan",
+		Sender:       "alice",
+		MessageToken: ptrString("abc"),
+		MessageTime:  ptrString("2024-01-01T00:00:00Z"),
+		MessageRaw:   ptrString("hello"),
+	}
+	id, inserted, err := s.EnsureIRCIdentity(ctx, rec)
+	if err != nil {
+		t.Fatalf("ensure irc identity: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected first insert to allocate")
+	}
+	id2, inserted2, err := s.EnsureIRCIdentity(ctx, rec)
+	if err != nil {
+		t.Fatalf("ensure irc identity second call: %v", err)
+	}
+	if inserted2 {
+		t.Fatalf("expected second ensure to be lookup")
+	}
+	if id != id2 {
+		t.Fatalf("expected stable pipo id, got %d then %d", id, id2)
+	}
+
+	gotByKey, err := s.SelectPipoIDByIRCSourceKey(ctx, rec.SourceKey)
+	if err != nil || gotByKey == nil || *gotByKey != id {
+		t.Fatalf("lookup by source key mismatch: id=%v err=%v", gotByKey, err)
+	}
+	gotByToken, err := s.SelectPipoIDByIRCToken(ctx, rec.Network, rec.Channel, "abc")
+	if err != nil || gotByToken == nil || *gotByToken != id {
+		t.Fatalf("lookup by token mismatch: id=%v err=%v", gotByToken, err)
+	}
+}
+
+func TestEnsureIRCIdentityValidatesSourceKey(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer s.Close()
+
+	_, _, err = s.EnsureIRCIdentity(ctx, IRCIdentityRecord{})
+	if err == nil {
+		t.Fatalf("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "source key") {
+		t.Fatalf("expected source key validation error, got %v", err)
+	}
+}
+
+func ptrString(v string) *string { return &v }

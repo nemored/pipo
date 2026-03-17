@@ -69,7 +69,7 @@ func TestIRCRegisterNicknameCollisionFallback(t *testing.T) {
 		done <- nil
 	}()
 
-	rt := newIRCRuntime(config.Transport{Nickname: "pipo", Server: listener.Addr().String(), IRCPass: "secret"}, nil)
+	rt := newIRCRuntime(config.Transport{Nickname: "pipo", Server: listener.Addr().String(), IRCPass: "secret"}, nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := rt.connect(ctx); err != nil {
@@ -104,7 +104,7 @@ func (c *captureRuntimeAPI) Subscribe(_ context.Context, _ string, _ int) (<-cha
 }
 
 func TestIRCHandleLineMembershipLifecycle(t *testing.T) {
-	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, nil)
+	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, nil, nil)
 	rt.activeNick = "pipo"
 	rt.writer = bufio.NewWriter(io.Discard)
 	api := &captureRuntimeAPI{}
@@ -121,7 +121,7 @@ func TestIRCHandleLineMembershipLifecycle(t *testing.T) {
 		":bob!u@h QUIT :gone",
 	}
 	for _, line := range lines {
-		if err := rt.handleLine(api, mapping, 42, line); err != nil {
+		if err := rt.handleLine(context.Background(), api, mapping, 42, line); err != nil {
 			t.Fatalf("handleLine(%q): %v", line, err)
 		}
 	}
@@ -145,9 +145,9 @@ func TestIRCHandleLineMembershipLifecycle(t *testing.T) {
 }
 
 func TestIRCHandleLineUnmappedDropped(t *testing.T) {
-	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, slog.Default())
+	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, slog.Default(), nil)
 	api := &captureRuntimeAPI{}
-	if err := rt.handleLine(api, map[string]string{"#mapped": "bus-1"}, 7, ":other!u@h JOIN :#unmapped"); err != nil {
+	if err := rt.handleLine(context.Background(), api, map[string]string{"#mapped": "bus-1"}, 7, ":other!u@h JOIN :#unmapped"); err != nil {
 		t.Fatalf("handle unmapped join: %v", err)
 	}
 	if len(api.events) != 0 {
@@ -186,7 +186,7 @@ func TestParseCTCP(t *testing.T) {
 }
 
 func TestIRCHandleLinePrivmsgCTCPClassification(t *testing.T) {
-	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, nil)
+	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, nil, nil)
 	api := &captureRuntimeAPI{}
 	mapping := map[string]string{"#mapped": "bus-1"}
 
@@ -196,7 +196,7 @@ func TestIRCHandleLinePrivmsgCTCPClassification(t *testing.T) {
 		":alice!u@h PRIVMSG #mapped :\x01VERSION\x01",
 	}
 	for _, line := range lines {
-		if err := rt.handleLine(api, mapping, 5, line); err != nil {
+		if err := rt.handleLine(context.Background(), api, mapping, 5, line); err != nil {
 			t.Fatalf("handleLine(%q): %v", line, err)
 		}
 	}
@@ -228,7 +228,7 @@ func TestFormatIRCOutboundMessage(t *testing.T) {
 }
 
 func TestIRCCompatSyntheticEditDeleteAndReaction(t *testing.T) {
-	rt := newIRCRuntime(config.Transport{Nickname: "pipo", IRCCompatMode: "synthetic", IRCCompatReactions: true, IRCReactionPrefix: "react "}, nil)
+	rt := newIRCRuntime(config.Transport{Nickname: "pipo", IRCCompatMode: "synthetic", IRCCompatReactions: true, IRCReactionPrefix: "react "}, nil, nil)
 	api := &captureRuntimeAPI{}
 	mapping := map[string]string{"#mapped": "bus-1"}
 
@@ -238,7 +238,7 @@ func TestIRCCompatSyntheticEditDeleteAndReaction(t *testing.T) {
 		":alice!u@h PRIVMSG #mapped :react 😀 103",
 	}
 	for _, line := range lines {
-		if err := rt.handleLine(api, mapping, 5, line); err != nil {
+		if err := rt.handleLine(context.Background(), api, mapping, 5, line); err != nil {
 			t.Fatalf("handleLine(%q): %v", line, err)
 		}
 	}
@@ -261,9 +261,9 @@ func TestIRCCompatSyntheticEditDeleteAndReaction(t *testing.T) {
 }
 
 func TestIRCCompatDisabledCreatesAnnotation(t *testing.T) {
-	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, nil)
+	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, nil, nil)
 	api := &captureRuntimeAPI{}
-	if err := rt.handleLine(api, map[string]string{"#mapped": "bus-1"}, 5, ":alice!u@h PRIVMSG #mapped :!delete 9"); err != nil {
+	if err := rt.handleLine(context.Background(), api, map[string]string{"#mapped": "bus-1"}, 5, ":alice!u@h PRIVMSG #mapped :!delete 9"); err != nil {
 		t.Fatalf("handleLine: %v", err)
 	}
 	events := api.events["bus-1"]
