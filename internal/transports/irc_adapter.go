@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,19 +29,22 @@ const (
 )
 
 type ircRuntime struct {
-	cfg         config.Transport
-	logger      *slog.Logger
-	conn        net.Conn
-	reader      *bufio.Reader
-	writer      *bufio.Writer
-	activeNick  string
-	nickAttempt int
-	members     map[string]map[string]string
-	namesBuf    map[string]map[string]string
+	cfg             config.Transport
+	logger          *slog.Logger
+	conn            net.Conn
+	reader          *bufio.Reader
+	writer          *bufio.Writer
+	activeNick      string
+	nickAttempt     int
+	members         map[string]map[string]string
+	namesBuf        map[string]map[string]string
+	compatMode      string
+	compatReactions bool
+	reactionPrefix  string
 }
 
 func newIRCRuntime(cfg config.Transport, logger *slog.Logger) *ircRuntime {
-	return &ircRuntime{cfg: cfg, logger: logger, activeNick: cfg.Nickname, members: map[string]map[string]string{}, namesBuf: map[string]map[string]string{}}
+	return &ircRuntime{cfg: cfg, logger: logger, activeNick: cfg.Nickname, members: map[string]map[string]string{}, namesBuf: map[string]map[string]string{}, compatMode: normalizeIRCCompatMode(cfg.IRCCompatMode), compatReactions: cfg.IRCCompatReactions, reactionPrefix: normalizeReactionPrefix(cfg.IRCReactionPrefix)}
 }
 
 func (i *ircRuntime) connect(ctx context.Context) error {
@@ -434,8 +438,119 @@ func (i *ircRuntime) publishIRCMessage(api core.RuntimeAPI, transportID int, bus
 		event := model.Event{Kind: model.EventAction, Sender: transportID, Source: model.SourceRef{Transport: "IRC", BusID: busID}, Username: stringPtr(nick), Message: stringPtr(ctcp.Body), CreatedAt: time.Now()}
 		return api.Publish(busID, event)
 	}
-	event := model.Event{Kind: model.EventText, Sender: transportID, Source: model.SourceRef{Transport: "IRC", BusID: busID}, Username: stringPtr(nick), Message: stringPtr(raw), CreatedAt: time.Now()}
-	return api.Publish(busID, event)
+	base := model.Event{Kind: model.EventText, Sender: transportID, Source: model.SourceRef{Transport: "IRC", BusID: busID}, Username: stringPtr(nick), Message: stringPtr(raw), CreatedAt: time.Now()}
+	events := i.translateCompatEvent(base, raw)
+	for _, event := range events {
+		if err := api.Publish(busID, event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var (
+	ircEditPattern   = regexp.MustCompile(`^!edit\s+(\S+)\s+(.+)$`)
+	ircDeletePattern = regexp.MustCompile(`^!delete\s+(\S+)\s*$`)
+)
+
+func normalizeIRCCompatMode(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "synthetic", "annotate":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return "off"
+	}
+}
+
+func normalizeReactionPrefix(v string) string {
+	prefix := strings.TrimSpace(v)
+	if prefix == "" {
+		return "react "
+	}
+	return prefix
+}
+
+func (i *ircRuntime) compatEnabled() bool {
+	return i.compatMode != "off"
+}
+
+func (i *ircRuntime) translateCompatEvent(base model.Event, raw string) []model.Event {
+	if edit := ircEditPattern.FindStringSubmatch(raw); len(edit) == 3 {
+		if !i.compatEnabled() {
+			return []model.Event{i.newCompatAnnotation(base, "edit", "capability_disabled", raw)}
+		}
+		ev := base
+		ev.IsEdit = true
+		ev.Message = stringPtr(edit[2])
+		ev.Metadata = compatMetadata("edit", i.compatMode, raw, map[string]string{"native": "false", "target_message_id": edit[1]})
+		return []model.Event{ev}
+	}
+	if del := ircDeletePattern.FindStringSubmatch(raw); len(del) == 2 {
+		if !i.compatEnabled() {
+			return []model.Event{i.newCompatAnnotation(base, "delete", "capability_disabled", raw)}
+		}
+		ev := base
+		ev.Kind = model.EventDelete
+		ev.Message = nil
+		ev.Source.MessageID = stringPtr(del[1])
+		ev.Metadata = compatMetadata("delete", i.compatMode, raw, map[string]string{"native": "false", "target_message_id": del[1]})
+		return []model.Event{ev}
+	}
+	if reaction, ok := i.tryTranslateReaction(base, raw); ok {
+		return []model.Event{reaction}
+	}
+	base.Metadata = compatMetadata("none", "native", raw, map[string]string{"native": "true", "compat_generated": "false"})
+	return []model.Event{base}
+}
+
+func (i *ircRuntime) tryTranslateReaction(base model.Event, raw string) (model.Event, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, i.reactionPrefix) {
+		return model.Event{}, false
+	}
+	if !i.compatReactions || !i.compatEnabled() {
+		return i.newCompatAnnotation(base, "reaction", "capability_disabled", raw), true
+	}
+	body := strings.TrimSpace(strings.TrimPrefix(trimmed, i.reactionPrefix))
+	parts := strings.Fields(body)
+	if len(parts) < 2 {
+		return i.newCompatAnnotation(base, "reaction", "invalid_format", raw), true
+	}
+	emoji := parts[0]
+	remove := strings.HasPrefix(emoji, "-")
+	emoji = strings.TrimPrefix(emoji, "-")
+	target := parts[1]
+	ev := base
+	ev.Kind = model.EventReaction
+	ev.Message = nil
+	ev.Emoji = stringPtr(emoji)
+	ev.Remove = remove
+	ev.Source.MessageID = stringPtr(target)
+	ev.Metadata = compatMetadata("reaction", i.compatMode, raw, map[string]string{"native": "false", "target_message_id": target})
+	return ev, true
+}
+
+func (i *ircRuntime) newCompatAnnotation(base model.Event, op, reason, raw string) model.Event {
+	ev := base
+	ev.Kind = model.EventBot
+	msg := fmt.Sprintf("IRC %s compatibility command ignored (%s)", op, reason)
+	ev.Message = stringPtr(msg)
+	ev.Metadata = compatMetadata(op, i.compatMode, raw, map[string]string{"native": "false", "compat_generated": "true", "compat_reason": reason})
+	return ev
+}
+
+func compatMetadata(op, mode, raw string, extra map[string]string) map[string]string {
+	meta := map[string]string{
+		"origin":           "irc",
+		"compat_op":        op,
+		"compat_mode":      mode,
+		"compat_generated": "true",
+		"raw_irc":          raw,
+	}
+	for k, v := range extra {
+		meta[k] = v
+	}
+	return meta
 }
 
 type ctcpKind string

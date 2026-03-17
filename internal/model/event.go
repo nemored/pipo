@@ -56,18 +56,19 @@ type SourceRef struct {
 // Event is the normalized equivalent of Rust Message variants, with optional
 // fields needed for cross-transport forwarding and edit/reaction synchronization.
 type Event struct {
-	Kind        EventKind    `json:"kind"`
-	Sender      int          `json:"sender"`
-	PipoID      *int64       `json:"pipo_id,omitempty"`
-	Source      SourceRef    `json:"source"`
-	Username    *string      `json:"username,omitempty"`
-	AvatarURL   *string      `json:"avatar_url,omitempty"`
-	Thread      *ThreadRef   `json:"thread,omitempty"`
-	Message     *string      `json:"message,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
-	IsEdit      bool         `json:"is_edit,omitempty"`
-	IRCFlag     bool         `json:"irc_flag,omitempty"`
-	Emoji       *string      `json:"emoji,omitempty"`
-	Remove      bool         `json:"remove,omitempty"`
-	CreatedAt   time.Time    `json:"created_at"`
+	Kind        EventKind         `json:"kind"`
+	Sender      int               `json:"sender"`
+	PipoID      *int64            `json:"pipo_id,omitempty"`
+	Source      SourceRef         `json:"source"`
+	Username    *string           `json:"username,omitempty"`
+	AvatarURL   *string           `json:"avatar_url,omitempty"`
+	Thread      *ThreadRef        `json:"thread,omitempty"`
+	Message     *string           `json:"message,omitempty"`
+	Attachments []Attachment      `json:"attachments,omitempty"`
+	IsEdit      bool              `json:"is_edit,omitempty"`
+	IRCFlag     bool              `json:"irc_flag,omitempty"`
+	Emoji       *string           `json:"emoji,omitempty"`
+	Remove      bool              `json:"remove,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
 }
