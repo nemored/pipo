@@ -81,6 +81,24 @@ func TestLoadIRCOptionalConnectionFields(t *testing.T) {
 	}
 }
 
+func TestLoadSlackExplicitSocketModeFields(t *testing.T) {
+	path := writeConfig(t, `{
+"buses": [{"id": "main"}],
+"transports": [
+  {"transport":"Slack","slack_app_token":"xapp-1","slack_bot_token":"xoxb-1","channel_mapping":{"main":"C1"}}
+]
+}`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	slack := cfg.Transports[0]
+	if slack.SlackAppToken != "xapp-1" || slack.SlackBotToken != "xoxb-1" {
+		t.Fatalf("unexpected slack socket mode tokens: %+v", slack)
+	}
+}
+
 func TestLoadRejectsUnknownTransportField(t *testing.T) {
 	path := writeConfig(t, `{
 "buses": [{"id": "main"}],
