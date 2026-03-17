@@ -77,7 +77,19 @@ jobs:
         run: go test ./...
 
       - name: Parity harness smoke test
-        run: go run ./cmd/parity-harness -fixture docs/parity/fixtures/high-risk.json
+        run: |
+          go run ./cmd/parity-harness \
+            -fixture docs/parity/fixtures/high-risk.json \
+            -artifact-root artifacts/parity \
+            -run-id ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload parity artifacts on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/parity
+          if-no-files-found: warn
 
       - name: Third-party parity preflight
         env:
