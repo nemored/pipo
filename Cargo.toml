@@ -35,7 +35,7 @@ tokio = { version = "1.43", features = ["full"] }
 tokio-rustls = "0.26"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 
 [build-dependencies]
 protobuf-codegen = "3.7.2"
