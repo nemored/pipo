@@ -44,7 +44,14 @@ pub(crate) struct Slack {
     channel_map: HashMap<String, String>,
     id_map: HashMap<String, String>,
     users: HashMap<String, User>,
+    thread_metadata_cache: HashMap<String, SlackThreadMetadata>,
     seen_event_ids: VecDeque<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SlackThreadMetadata {
+    root_author: Option<String>,
+    root_excerpt: Option<String>,
 }
 
 struct WebSocket {
@@ -93,6 +100,7 @@ impl Slack {
             channel_map: HashMap::new(),
             id_map: HashMap::new(),
             users: HashMap::new(),
+            thread_metadata_cache: HashMap::new(),
             seen_event_ids: VecDeque::with_capacity(50),
         })
     }
@@ -1508,13 +1516,86 @@ impl Slack {
         }
     }
 
+    fn build_thread_excerpt(message: Option<&str>) -> Option<String> {
+        let message = message?.trim();
+        if message.is_empty() {
+            return None;
+        }
+
+        let excerpt = message.chars().take(120).collect::<String>();
+        if message.chars().count() > 120 {
+            Some(format!("{}…", excerpt))
+        } else {
+            Some(excerpt)
+        }
+    }
+
+    fn get_username_from_cache(&self, user_id: &str) -> Option<String> {
+        self.users
+            .values()
+            .find(|user| user.id.as_deref() == Some(user_id))
+            .and_then(|user| Slack::get_username(user).ok())
+    }
+
+    async fn fetch_thread_root_metadata(
+        &mut self,
+        channel: &str,
+        thread_root_id: &str,
+    ) -> anyhow::Result<SlackThreadMetadata> {
+        let root_message = self
+            .get_message(channel, &Timestamp(thread_root_id.to_string()))
+            .await?;
+        let root_user = root_message.user.clone();
+        let root_text = root_message.text.clone();
+        let root_author = match root_user {
+            Some(user_id) => match self.get_username_from_cache(&user_id) {
+                Some(name) => Some(name),
+                None => {
+                    let user = self.get_user_info(&user_id).await?;
+                    Some(Slack::get_username(&user)?)
+                }
+            },
+            None => None,
+        };
+
+        Ok(SlackThreadMetadata {
+            root_author,
+            root_excerpt: Slack::build_thread_excerpt(root_text.as_deref()),
+        })
+    }
+
     async fn build_slack_thread_ref(
-        &self,
+        &mut self,
         thread_ts: Option<String>,
+        channel: &str,
+        message_ts: Option<&str>,
+        local_author: Option<&str>,
+        local_message: Option<&str>,
     ) -> anyhow::Result<Option<ThreadRef>> {
         let Some(thread_root_id) = thread_ts else {
             return Ok(None);
         };
+
+        match self.select_id_from_messages(&thread_root_id).await {
+            Some(_) => {}
+            None => {
+                self.insert_into_messages_table(&thread_root_id).await?;
+            }
+        }
+
+        let metadata = if message_ts == Some(thread_root_id.as_str()) {
+            SlackThreadMetadata {
+                root_author: local_author.map(String::from),
+                root_excerpt: Slack::build_thread_excerpt(local_message),
+            }
+        } else if let Some(metadata) = self.thread_metadata_cache.get(&thread_root_id) {
+            metadata.clone()
+        } else {
+            self.fetch_thread_root_metadata(channel, &thread_root_id).await?
+        };
+
+        self.thread_metadata_cache
+            .insert(thread_root_id.clone(), metadata.clone());
 
         Ok(Some(ThreadRef {
             origin_transport: TRANSPORT_NAME.to_string(),
@@ -1522,6 +1603,8 @@ impl Slack {
                 .select_discordid_from_messages(thread_root_id.clone())
                 .await?,
             thread_root_id: Some(thread_root_id),
+            root_author: metadata.root_author,
+            root_excerpt: metadata.root_excerpt,
             ..Default::default()
         }))
     }
@@ -1536,7 +1619,9 @@ impl Slack {
         _hidden: bool,
         is_edit: bool,
     ) -> anyhow::Result<()> {
-        let _thread = self.build_slack_thread_ref(thread_ts).await?;
+        let _thread = self
+            .build_slack_thread_ref(thread_ts, channel, ts.as_deref(), None, message.as_deref())
+            .await?;
         let pipo_id = match ts {
             Some(ts) => match self.select_id_from_messages(&ts).await {
                 Some(id) => id,
@@ -1945,7 +2030,6 @@ impl Slack {
     ) -> anyhow::Result<()> {
         let has_message = message.is_some();
         let has_attachments = attachments.is_some();
-        let thread = self.build_slack_thread_ref(thread_ts).await?;
         let ts = ts.ok_or_else(|| anyhow!("Message has no timestamp."))?;
         let pipo_id = match self.select_id_from_messages(&ts).await {
             Some(id) => id,
@@ -1961,6 +2045,15 @@ impl Slack {
             .get_user_info(&user.ok_or_else(|| anyhow!("No user ID in message."))?)
             .await?;
         let username = Slack::get_username(&user)?;
+        let thread = self
+            .build_slack_thread_ref(
+                thread_ts,
+                channel,
+                Some(ts.as_str()),
+                Some(username.as_str()),
+                message.as_deref(),
+            )
+            .await?;
         let avatar_url = Slack::get_avatar_url_for_user(&user)?;
         let attachments = match attachments {
             Some(attachments) => Some(self.handle_attachments(attachments).await),
@@ -1968,6 +2061,14 @@ impl Slack {
         };
 
         if has_message || has_attachments {
+            self.thread_metadata_cache.insert(
+                ts.clone(),
+                SlackThreadMetadata {
+                    root_author: Some(username.clone()),
+                    root_excerpt: Slack::build_thread_excerpt(message.as_deref()),
+                },
+            );
+
             let message = Message::Text {
                 pipo_id,
                 sender: self.transport_id,
