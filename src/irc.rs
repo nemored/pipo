@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use deadpool_sqlite::Pool;
@@ -20,6 +21,14 @@ use anyhow::anyhow;
 
 const TRANSPORT_NAME: &'static str = "IRC";
 const DEFAULT_THREAD_EXCERPT_LEN: usize = 120;
+const REPLY_TOKEN_TTL: Duration = Duration::from_secs(60 * 60 * 6);
+
+#[derive(Clone, Debug)]
+struct ReplyTokenEntry {
+    thread_ref: ThreadRef,
+    nickname: Option<String>,
+    created_at: Instant,
+}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +77,7 @@ pub(crate) struct IRC {
     thread_excerpt_len: usize,
     show_thread_root_marker: bool,
     seen_thread_tokens: Arc<Mutex<HashMap<String, HashSet<String>>>>,
+    reply_tokens: Arc<Mutex<HashMap<(String, String), ReplyTokenEntry>>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -140,6 +150,7 @@ impl IRC {
             },
             show_thread_root_marker,
             seen_thread_tokens: Arc::new(Mutex::new(HashMap::new())),
+            reply_tokens: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -281,7 +292,8 @@ impl IRC {
 
                     if let Command::PRIVMSG(channel, message)
                         = message.command {
-                        if let Err(e) = self.handle_priv_msg(nickname,
+                        if let Err(e) = self.handle_priv_msg(&client,
+                                             nickname,
                                              channel,
                                              message,
                                              irc_message_id)
@@ -738,6 +750,8 @@ impl IRC {
             };
         }
 
+        self.remember_reply_token(channel, thread, None);
+
         let can_use_reply_tags = self.capabilities.supports_message_tags
             && self.capabilities.supports_reply_tags
             && !matches!(
@@ -879,6 +893,116 @@ impl IRC {
         channel_seen.insert(token.to_string())
     }
 
+    fn remember_reply_token(
+        &self,
+        channel: &str,
+        thread: &Option<ThreadRef>,
+        nickname: Option<&str>,
+    ) {
+        let Some(thread_ref) = thread.as_ref() else {
+            return;
+        };
+
+        let token = IRC::thread_token(thread_ref);
+        let mut tokens = self.reply_tokens.lock().unwrap();
+        IRC::cleanup_expired_reply_tokens(&mut tokens);
+        tokens.insert(
+            (channel.to_string(), token),
+            ReplyTokenEntry {
+                thread_ref: thread_ref.clone(),
+                nickname: nickname.map(str::to_string),
+                created_at: Instant::now(),
+            },
+        );
+    }
+
+    fn cleanup_expired_reply_tokens(tokens: &mut HashMap<(String, String), ReplyTokenEntry>) {
+        let now = Instant::now();
+        tokens.retain(|_, entry| now.duration_since(entry.created_at) < REPLY_TOKEN_TTL);
+    }
+
+    fn resolve_reply_token(
+        &self,
+        channel: &str,
+        nickname: Option<&str>,
+        token: &str,
+    ) -> Option<ThreadRef> {
+        let mut tokens = self.reply_tokens.lock().unwrap();
+        IRC::cleanup_expired_reply_tokens(&mut tokens);
+
+        let key = (channel.to_string(), token.to_uppercase());
+        let entry = tokens.get(&key)?;
+
+        if let (Some(expected), Some(actual)) = (entry.nickname.as_deref(), nickname) {
+            if !expected.eq_ignore_ascii_case(actual) {
+                return None;
+            }
+        }
+
+        Some(entry.thread_ref.clone())
+    }
+
+    fn active_reply_tokens_for_channel(&self, channel: &str) -> Vec<String> {
+        let mut tokens = self.reply_tokens.lock().unwrap();
+        IRC::cleanup_expired_reply_tokens(&mut tokens);
+
+        tokens
+            .keys()
+            .filter(|(token_channel, _)| token_channel == channel)
+            .map(|(_, token)| token.clone())
+            .collect()
+    }
+
+    fn parse_reply_command(message: &str) -> Option<(String, String)> {
+        let trimmed = message.trim_start();
+        let (token, remaining) = if let Some(command) = trimmed.strip_prefix(">>") {
+            let mut parts = command.splitn(2, char::is_whitespace);
+            let token = parts.next()?.trim();
+            let remaining = parts.next()?.trim_start();
+            (token, remaining)
+        } else if let Some(command) = trimmed.strip_prefix("/reply") {
+            let command = command.trim_start();
+            let mut parts = command.splitn(2, char::is_whitespace);
+            let token = parts.next()?.trim();
+            let remaining = parts.next()?.trim_start();
+            (token, remaining)
+        } else {
+            return None;
+        };
+
+        if token.is_empty() || remaining.is_empty() {
+            return None;
+        }
+
+        if !token.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+            return None;
+        }
+
+        Some((token.to_uppercase(), remaining.to_string()))
+    }
+
+    async fn send_reply_token_usage_notice(&self, client: &Client, channel: &str) {
+        let mut active = self.active_reply_tokens_for_channel(channel);
+        active.sort();
+        let sample = if active.is_empty() {
+            "none currently cached".to_string()
+        } else {
+            active.into_iter().take(8).collect::<Vec<_>>().join(", ")
+        };
+
+        let notice = format!(
+            "Unknown or expired reply token. Usage: >>TOKEN your reply or /reply TOKEN your reply. Discover tokens from [t:TOKEN] thread markers in recent bridged messages. Active tokens: {}",
+            sample
+        );
+
+        if let Err(e) = client.send_notice(channel, notice) {
+            eprintln!(
+                "Failed to send reply-token usage notice to {}: {:#}",
+                channel, e
+            );
+        }
+    }
+
     fn thread_token(thread_ref: &ThreadRef) -> String {
         let token_input = thread_ref
             .thread_root_id
@@ -986,6 +1110,7 @@ impl IRC {
 
     async fn handle_priv_msg(
         &self,
+        client: &Client,
         nickname: String,
         channel: String,
         message: String,
@@ -1007,14 +1132,29 @@ impl IRC {
 
             if let Some(message) = RE.captures(&message) {
                 let message = message.get(1).unwrap().as_str();
+                let mut thread = None;
+                let mut content = message.to_string();
+
+                if let Some((token, parsed_message)) = IRC::parse_reply_command(message) {
+                    if let Some(thread_ref) =
+                        self.resolve_reply_token(&channel, Some(&nickname), &token)
+                    {
+                        thread = Some(thread_ref);
+                        content = parsed_message;
+                    } else {
+                        self.send_reply_token_usage_notice(client, &channel).await;
+                        return Ok(());
+                    }
+                }
+
                 let message = Message::Action {
                     sender: self.transport_id,
                     pipo_id,
                     transport: TRANSPORT_NAME.to_string(),
                     username: nickname.clone(),
                     avatar_url: Some(avatar_url),
-                    thread: None,
-                    message: Some(message.to_string()),
+                    thread,
+                    message: Some(content),
                     attachments: None,
                     is_edit: false,
                     irc_flag: false,
@@ -1024,14 +1164,29 @@ impl IRC {
                     Err(e) => Err(anyhow!("Couldn't send message: {:#}", e)),
                 };
             } else {
+                let mut thread = None;
+                let mut content = message.to_string();
+
+                if let Some((token, parsed_message)) = IRC::parse_reply_command(&message) {
+                    if let Some(thread_ref) =
+                        self.resolve_reply_token(&channel, Some(&nickname), &token)
+                    {
+                        thread = Some(thread_ref);
+                        content = parsed_message;
+                    } else {
+                        self.send_reply_token_usage_notice(client, &channel).await;
+                        return Ok(());
+                    }
+                }
+
                 let message = Message::Text {
                     sender: self.transport_id,
                     pipo_id,
                     transport: TRANSPORT_NAME.to_string(),
                     username: nickname.clone(),
                     avatar_url: Some(avatar_url),
-                    thread: None,
-                    message: Some(message.to_string()),
+                    thread,
+                    message: Some(content),
                     attachments: None,
                     is_edit: false,
                     irc_flag: false,
