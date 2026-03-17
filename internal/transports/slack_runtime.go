@@ -23,6 +23,10 @@ const slackSocketOpenURL = "https://slack.com/api/apps.connections.open"
 const slackAuthTestURL = "https://slack.com/api/auth.test"
 const slackConversationsListURL = "https://slack.com/api/conversations.list"
 const slackUsersListURL = "https://slack.com/api/users.list"
+const slackChatUpdateURL = "https://slack.com/api/chat.update"
+const slackChatDeleteURL = "https://slack.com/api/chat.delete"
+const slackReactionsAddURL = "https://slack.com/api/reactions.add"
+const slackReactionsRemoveURL = "https://slack.com/api/reactions.remove"
 
 type slackWSDialer interface {
 	DialContext(ctx context.Context, urlStr string, requestHeader http.Header) (slackWSConn, *http.Response, error)
@@ -237,39 +241,47 @@ func (s *slackRuntime) handleEventsAPI(raw json.RawMessage, api core.RuntimeAPI,
 	switch base.Type {
 	case "message":
 		var event struct {
-			Type    string `json:"type"`
-			Subtype string `json:"subtype"`
-			User    string `json:"user"`
-			Channel string `json:"channel"`
-			Text    string `json:"text"`
-			TS      string `json:"ts"`
+			Type      string `json:"type"`
+			Subtype   string `json:"subtype"`
+			User      string `json:"user"`
+			Channel   string `json:"channel"`
+			Text      string `json:"text"`
+			TS        string `json:"ts"`
+			DeletedTS string `json:"deleted_ts"`
+			Message   struct {
+				User    string `json:"user"`
+				Text    string `json:"text"`
+				TS      string `json:"ts"`
+				Channel string `json:"channel"`
+			} `json:"message"`
 		}
 		if err := json.Unmarshal(raw, &event); err != nil {
 			return
 		}
-		if event.Subtype != "" {
+		switch event.Subtype {
+		case "":
+			s.publishSlackTextEvent(api, remoteToChannel, transportID, event.Channel, event.User, event.Text, event.TS, false)
+		case "message_changed":
+			s.publishSlackTextEvent(api, remoteToChannel, transportID, firstNonEmptySlack(event.Channel, event.Message.Channel), event.Message.User, event.Message.Text, event.Message.TS, true)
+		case "message_deleted":
+			s.publishSlackDeleteEvent(api, remoteToChannel, transportID, event.Channel, event.DeletedTS)
+		}
+	case "reaction_added", "reaction_removed":
+		var event struct {
+			Reaction string `json:"reaction"`
+			Item     struct {
+				Type    string `json:"type"`
+				Channel string `json:"channel"`
+				TS      string `json:"ts"`
+			} `json:"item"`
+		}
+		if err := json.Unmarshal(raw, &event); err != nil {
 			return
 		}
-		busID, ok := remoteToChannel[event.Channel]
-		if !ok {
-			if s.logger != nil {
-				s.logger.Warn("slack inbound channel unmapped", "channel_id", event.Channel)
-			}
+		if event.Item.Type != "message" {
 			return
 		}
-		txt := event.Text
-		username := s.displayNameForUser(event.User)
-		norm := model.Event{
-			Kind:     model.EventText,
-			Sender:   transportID,
-			Source:   model.SourceRef{Transport: "Slack", BusID: busID, MessageID: &event.TS},
-			Message:  &txt,
-			Username: &username,
-			Metadata: map[string]string{"slack_channel_id": event.Channel, "slack_channel_name": s.channelNameForID(event.Channel)},
-		}
-		if err := api.Publish(busID, norm); err != nil && s.logger != nil {
-			s.logger.Warn("slack inbound publish failed", "bus_id", busID, "error", err)
-		}
+		s.publishSlackReactionEvent(api, remoteToChannel, transportID, event.Item.Channel, event.Item.TS, event.Reaction, base.Type == "reaction_removed")
 	case "channel_created":
 		var event struct {
 			Channel slackChannelMeta `json:"channel"`
@@ -305,6 +317,97 @@ func (s *slackRuntime) handleEventsAPI(raw json.RawMessage, api core.RuntimeAPI,
 		}
 		s.upsertUserName(event.User.ID, firstNonEmptySlack(event.User.Profile.DisplayName, event.User.Profile.RealName, event.User.Name, event.User.ID))
 	}
+}
+
+func (s *slackRuntime) publishSlackTextEvent(api core.RuntimeAPI, remoteToChannel map[string]string, transportID int, channelID, userID, text, ts string, isEdit bool) {
+	if strings.TrimSpace(ts) == "" {
+		return
+	}
+	busID, ok := remoteToChannel[channelID]
+	if !ok {
+		if s.logger != nil {
+			s.logger.Warn("slack inbound channel unmapped", "channel_id", channelID)
+		}
+		return
+	}
+	username := s.displayNameForUser(userID)
+	norm := model.Event{
+		Kind:     model.EventText,
+		Sender:   transportID,
+		Source:   model.SourceRef{Transport: "Slack", BusID: busID, MessageID: &ts},
+		Message:  &text,
+		Username: &username,
+		IsEdit:   isEdit,
+		Metadata: map[string]string{"slack_channel_id": channelID, "slack_channel_name": s.channelNameForID(channelID)},
+	}
+	s.attachInboundPipoID(&norm, ts)
+	if err := api.Publish(busID, norm); err != nil && s.logger != nil {
+		s.logger.Warn("slack inbound publish failed", "bus_id", busID, "error", err)
+	}
+}
+
+func (s *slackRuntime) publishSlackDeleteEvent(api core.RuntimeAPI, remoteToChannel map[string]string, transportID int, channelID, ts string) {
+	if strings.TrimSpace(ts) == "" {
+		return
+	}
+	busID, ok := remoteToChannel[channelID]
+	if !ok {
+		if s.logger != nil {
+			s.logger.Warn("slack inbound channel unmapped", "channel_id", channelID)
+		}
+		return
+	}
+	norm := model.Event{Kind: model.EventDelete, Sender: transportID, Source: model.SourceRef{Transport: "Slack", BusID: busID, MessageID: &ts}}
+	if !s.attachInboundPipoID(&norm, ts) {
+		if s.logger != nil {
+			s.logger.Warn("slack inbound delete missing pipo mapping", "slack_ts", ts)
+		}
+		return
+	}
+	if err := api.Publish(busID, norm); err != nil && s.logger != nil {
+		s.logger.Warn("slack inbound publish failed", "bus_id", busID, "error", err)
+	}
+}
+
+func (s *slackRuntime) publishSlackReactionEvent(api core.RuntimeAPI, remoteToChannel map[string]string, transportID int, channelID, ts, reaction string, remove bool) {
+	if strings.TrimSpace(ts) == "" || strings.TrimSpace(reaction) == "" {
+		return
+	}
+	busID, ok := remoteToChannel[channelID]
+	if !ok {
+		if s.logger != nil {
+			s.logger.Warn("slack inbound channel unmapped", "channel_id", channelID)
+		}
+		return
+	}
+	norm := model.Event{Kind: model.EventReaction, Sender: transportID, Source: model.SourceRef{Transport: "Slack", BusID: busID, MessageID: &ts}, Emoji: &reaction, Remove: remove}
+	if !s.attachInboundPipoID(&norm, ts) {
+		if s.logger != nil {
+			s.logger.Warn("slack inbound reaction missing pipo mapping", "slack_ts", ts, "emoji", reaction)
+		}
+		return
+	}
+	if err := api.Publish(busID, norm); err != nil && s.logger != nil {
+		s.logger.Warn("slack inbound publish failed", "bus_id", busID, "error", err)
+	}
+}
+
+func (s *slackRuntime) attachInboundPipoID(ev *model.Event, slackID string) bool {
+	if s.store == nil {
+		return false
+	}
+	id, err := s.store.SelectIDBySlack(context.Background(), slackID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("slack inbound id lookup failed", "slack_id", slackID, "error", err)
+		}
+		return false
+	}
+	if id == nil {
+		return false
+	}
+	ev.PipoID = id
+	return true
 }
 
 func (s *slackRuntime) upsertUserName(userID, name string) {
@@ -404,6 +507,9 @@ func (s *slackRuntime) forwardOutboundEvent(busID string, channelToRemote map[st
 		}
 		return nil
 	}
+	if ev.Kind == model.EventDelete || ev.Kind == model.EventReaction || ev.IsEdit {
+		return s.forwardOutboundMutation(ev, remoteID)
+	}
 	payload, ok := buildSlackOutboundPayload(ev, remoteID)
 	if !ok {
 		return nil
@@ -413,6 +519,85 @@ func (s *slackRuntime) forwardOutboundEvent(busID string, channelToRemote map[st
 		return err
 	}
 	return s.recordOutboundSlackRef(ev, ts)
+}
+
+func (s *slackRuntime) forwardOutboundMutation(ev model.Event, channelID string) error {
+	if ev.PipoID == nil {
+		if s.logger != nil {
+			s.logger.Warn("slack outbound mutation missing pipo id", "kind", ev.Kind)
+		}
+		return nil
+	}
+	slackID, err := s.resolveSlackByPipoID(*ev.PipoID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(slackID) == "" {
+		if s.logger != nil {
+			s.logger.Warn("slack outbound mutation missing slack mapping", "kind", ev.Kind, "pipo_id", *ev.PipoID)
+		}
+		return nil
+	}
+	if ev.IsEdit {
+		payload, ok := buildSlackOutboundPayload(ev, channelID)
+		if !ok {
+			return nil
+		}
+		payload["ts"] = slackID
+		ts, err := s.callChatUpdate(payload)
+		if err != nil {
+			if isSlackStaleMessageError(err) {
+				if s.logger != nil {
+					s.logger.Warn("slack outbound update stale target", "pipo_id", *ev.PipoID, "slack_ts", slackID, "error", err)
+				}
+				return nil
+			}
+			return err
+		}
+		if strings.TrimSpace(ts) != "" {
+			return s.store.UpdateSlackByID(context.Background(), *ev.PipoID, ts)
+		}
+		return nil
+	}
+	if ev.Kind == model.EventDelete {
+		err := s.callChatDelete(channelID, slackID)
+		if isSlackStaleMessageError(err) {
+			if s.logger != nil {
+				s.logger.Warn("slack outbound delete stale target", "pipo_id", *ev.PipoID, "slack_ts", slackID, "error", err)
+			}
+			return nil
+		}
+		return err
+	}
+	if ev.Kind == model.EventReaction {
+		if ev.Emoji == nil || strings.TrimSpace(*ev.Emoji) == "" {
+			return nil
+		}
+		emoji := strings.Trim(strings.TrimSpace(*ev.Emoji), ":")
+		err := s.callReactionAPI(channelID, slackID, emoji, ev.Remove)
+		if isSlackStaleMessageError(err) {
+			if s.logger != nil {
+				s.logger.Warn("slack outbound reaction stale target", "pipo_id", *ev.PipoID, "slack_ts", slackID, "emoji", emoji, "error", err)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *slackRuntime) resolveSlackByPipoID(pipoID int64) (string, error) {
+	if s.store == nil {
+		return "", nil
+	}
+	id, err := s.store.SelectSlackByID(context.Background(), pipoID)
+	if err != nil {
+		return "", err
+	}
+	if id == nil {
+		return "", nil
+	}
+	return *id, nil
 }
 
 func buildSlackOutboundPayload(ev model.Event, channelID string) (map[string]any, bool) {
@@ -502,6 +687,74 @@ func (s *slackRuntime) callChatPostMessage(payload map[string]any) (string, erro
 		return "", fmt.Errorf("chat.postMessage failed: %s", out.Error)
 	}
 	return firstNonEmptySlack(out.TS, out.Message.TS), nil
+}
+
+func (s *slackRuntime) callChatUpdate(payload map[string]any) (string, error) {
+	out, err := s.callSlackMethod(slackChatUpdateURL, payload)
+	if err != nil {
+		return "", err
+	}
+	return firstNonEmptySlack(out.TS, out.Message.TS), nil
+}
+
+func (s *slackRuntime) callChatDelete(channelID, slackID string) error {
+	_, err := s.callSlackMethod(slackChatDeleteURL, map[string]any{"channel": channelID, "ts": slackID})
+	return err
+}
+
+func (s *slackRuntime) callReactionAPI(channelID, slackID, emoji string, remove bool) error {
+	endpoint := slackReactionsAddURL
+	if remove {
+		endpoint = slackReactionsRemoveURL
+	}
+	_, err := s.callSlackMethod(endpoint, map[string]any{"channel": channelID, "timestamp": slackID, "name": emoji})
+	return err
+}
+
+type slackMethodResponse struct {
+	OK      bool   `json:"ok"`
+	Error   string `json:"error"`
+	TS      string `json:"ts"`
+	Message struct {
+		TS string `json:"ts"`
+	} `json:"message"`
+}
+
+func (s *slackRuntime) callSlackMethod(endpoint string, payload map[string]any) (slackMethodResponse, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return slackMethodResponse{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return slackMethodResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.botToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return slackMethodResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return slackMethodResponse{}, fmt.Errorf("%s status %d", endpoint, resp.StatusCode)
+	}
+	var out slackMethodResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return slackMethodResponse{}, err
+	}
+	if !out.OK {
+		return slackMethodResponse{}, fmt.Errorf("%s failed: %s", endpoint, out.Error)
+	}
+	return out, nil
+}
+
+func isSlackStaleMessageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "message_not_found") || strings.Contains(msg, "already_reacted") || strings.Contains(msg, "no_reaction")
 }
 
 func (s *slackRuntime) recordOutboundSlackRef(ev model.Event, slackID string) error {
