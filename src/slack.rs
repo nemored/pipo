@@ -1442,6 +1442,24 @@ impl Slack {
         pool.get()
             .await?
             .interact(move |conn| {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS slack_event_log (
+                                   id            INTEGER PRIMARY KEY,
+                                   received_at   TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+                                   envelope_id   TEXT,
+                                   event_id      TEXT,
+                                   retry_attempt INTEGER,
+                                   event_type    TEXT,
+                                   channel_id    TEXT,
+                                   user_id       TEXT,
+                                   ts            TEXT,
+                                   thread_ts     TEXT,
+                                   payload_json  TEXT,
+                                   payload_hash  TEXT,
+                                   is_duplicate  INTEGER
+                               );",
+                )?;
+
                 conn.execute(
                     "DELETE FROM slack_event_log
                      WHERE received_at < datetime('now', '-' || ? || ' days')",
