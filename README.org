@@ -34,3 +34,18 @@ cargo run
 - CI clean-regeneration drift checks run on the checked-out commit and only fail when build steps mutate tracked files unexpectedly (not because the PR contains committed changes).
 - CI uses lockfile-locked cargo invocations (e.g. =cargo build --locked=) to avoid dependency-resolution drift between environments.
 - CI is expected to pass with protobuf runtime =\>= 3.7.2=.
+
+
+** IRC threading presentation tuning
+For IRC transports, threaded message presentation can be tuned per transport entry:
+- =thread_presentation_mode=: controls how thread context is represented.
+  - =auto= (default): use IRCv3 =+draft/reply= when available, otherwise emit plaintext fallback context.
+  - =ircv3_only=: only emit IRCv3 reply tags; no plaintext fallback when tags are unavailable.
+  - =plaintext_only=: always emit plaintext context and never emit IRCv3 reply tags.
+- =thread_excerpt_len= (default =120=): max character count used for plaintext thread root excerpts.
+- =show_thread_root_marker= (default =true=): when plaintext mode is used for the root post itself, include the =[thread]= marker.
+
+Migration behavior:
+- Existing configs continue to work without changes.
+- If these fields are omitted, defaults preserve current behavior (=auto=, excerpt length =120=, root marker enabled).
+- Set =plaintext_only= for legacy IRC networks that do not support IRCv3 tags and where explicit plaintext context is preferred.
