@@ -456,6 +456,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{collections::HashMap, fs, path::Path};
 
     struct TestResolver;
 
@@ -619,6 +620,124 @@ mod tests {
             .unwrap();
         assert_eq!(rendered, "@unknown-user:U404 #unknown-channel:C404");
     }
+
+    fn conformance_fixture_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/slack_rich_text")
+    }
+
+    fn parse_matrix_rows() -> HashMap<String, (String, String)> {
+        let matrix_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/slack-richtext-compat.md");
+        let matrix =
+            fs::read_to_string(matrix_path).expect("compatibility matrix doc should exist");
+        matrix
+            .lines()
+            .filter(|line| line.starts_with('|') && !line.contains("---"))
+            .filter_map(|line| {
+                let cols = line.split('|').map(|col| col.trim()).collect::<Vec<_>>();
+                if cols.len() < 6 {
+                    return None;
+                }
+                let fixture = cols[1].trim_matches('`').to_string();
+                if fixture == "Fixture" {
+                    return None;
+                }
+
+                Some((fixture, (cols[3].to_string(), cols[4].to_string())))
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn slack_rich_text_conformance_suite_matches_goldens() {
+        let fixtures_dir = conformance_fixture_dir();
+        let mut fixtures = fs::read_dir(&fixtures_dir)
+            .expect("fixture directory should exist")
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        fixtures.sort();
+
+        assert!(
+            !fixtures.is_empty(),
+            "conformance fixtures should not be empty"
+        );
+
+        for json_path in fixtures {
+            let fixture = fs::read_to_string(&json_path).expect("fixture json should be readable");
+            let element: Element = serde_json::from_str(&fixture)
+                .expect("fixture json should deserialize into Element");
+
+            let golden_path = json_path.with_extension("golden");
+            assert!(
+                golden_path.exists(),
+                "missing golden output for fixture {}",
+                json_path.display()
+            );
+            let expected = fs::read_to_string(&golden_path)
+                .expect("golden fixture should be readable")
+                .trim_end_matches('\n')
+                .to_string();
+
+            let mut resolver = TestResolver;
+            let rendered = render(&mut resolver, &element, RenderOptions::default())
+                .await
+                .expect("fixture should render");
+            assert_eq!(
+                rendered,
+                expected,
+                "render mismatch for fixture {}",
+                json_path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn compatibility_matrix_covers_conformance_fixtures() {
+        let fixtures_dir = conformance_fixture_dir();
+        let fixtures = fs::read_dir(&fixtures_dir)
+            .expect("fixture directory should exist")
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                (path.extension().and_then(|ext| ext.to_str()) == Some("json")).then_some(path)
+            })
+            .collect::<Vec<_>>();
+
+        let matrix_rows = parse_matrix_rows();
+
+        for fixture_path in fixtures {
+            let fixture_name = fixture_path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .expect("fixture name should be valid utf8")
+                .to_string();
+
+            let (status, justification) = matrix_rows
+                .get(&fixture_name)
+                .unwrap_or_else(|| panic!("missing matrix row for fixture `{fixture_name}`"));
+
+            assert!(
+                ["full", "partial", "unsupported"].contains(&status.as_str()),
+                "invalid status `{status}` for fixture `{fixture_name}`"
+            );
+
+            if status != "full" {
+                assert!(
+                    !justification.is_empty() && justification != "N/A",
+                    "fixture `{fixture_name}` is `{status}` but missing justification in docs/slack-richtext-compat.md"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn renders_nested_layouts_with_golden_fixtures() {
         let list_in_quote = Element::RichTextQuote {
@@ -720,7 +839,8 @@ mod tests {
                 .unwrap();
         assert_eq!(
             rendered_list_in_quote,
-            include_str!("../../fixtures/rich_text/list_in_quote.golden").trim_end_matches('\n')
+            include_str!("../../fixtures/slack_rich_text/list_in_quote.golden")
+                .trim_end_matches('\n')
         );
 
         let mut resolver = TestResolver;
@@ -730,7 +850,8 @@ mod tests {
                 .unwrap();
         assert_eq!(
             rendered_quote_in_list,
-            include_str!("../../fixtures/rich_text/quote_in_list.golden").trim_end_matches('\n')
+            include_str!("../../fixtures/slack_rich_text/quote_in_list.golden")
+                .trim_end_matches('\n')
         );
 
         let mut resolver = TestResolver;
@@ -743,7 +864,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             rendered_code_in_list,
-            include_str!("../../fixtures/rich_text/code_within_list.golden").trim_end_matches('\n')
+            include_str!("../../fixtures/slack_rich_text/code_within_list.golden")
+                .trim_end_matches('\n')
         );
     }
 }

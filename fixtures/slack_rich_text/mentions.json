@@ -1,0 +1,14 @@
+{
+  "type": "rich_text_section",
+  "elements": [
+    { "type": "user", "user_id": "U123" },
+    { "type": "text", "text": " " },
+    { "type": "channel", "channel_id": "C123" },
+    { "type": "text", "text": " " },
+    { "type": "broadcast", "range": "here" },
+    { "type": "text", "text": " " },
+    { "type": "team", "team_id": "T123" },
+    { "type": "text", "text": " " },
+    { "type": "usergroup", "usergroup_id": "S123" }
+  ]
+}
