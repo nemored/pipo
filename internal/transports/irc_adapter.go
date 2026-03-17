@@ -4,16 +4,19 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nemored/pipo/internal/config"
 	"github.com/nemored/pipo/internal/core"
+	"github.com/nemored/pipo/internal/model"
 )
 
 const (
@@ -32,10 +35,12 @@ type ircRuntime struct {
 	writer      *bufio.Writer
 	activeNick  string
 	nickAttempt int
+	members     map[string]map[string]string
+	namesBuf    map[string]map[string]string
 }
 
 func newIRCRuntime(cfg config.Transport, logger *slog.Logger) *ircRuntime {
-	return &ircRuntime{cfg: cfg, logger: logger, activeNick: cfg.Nickname}
+	return &ircRuntime{cfg: cfg, logger: logger, activeNick: cfg.Nickname, members: map[string]map[string]string{}, namesBuf: map[string]map[string]string{}}
 }
 
 func (i *ircRuntime) connect(ctx context.Context) error {
@@ -69,6 +74,8 @@ func (i *ircRuntime) connect(ctx context.Context) error {
 	i.writer = bufio.NewWriter(conn)
 	i.activeNick = i.cfg.Nickname
 	i.nickAttempt = 0
+	i.members = map[string]map[string]string{}
+	i.namesBuf = map[string]map[string]string{}
 	return nil
 }
 
@@ -131,9 +138,8 @@ func (i *ircRuntime) register(ctx context.Context) error {
 	return nil
 }
 
-func (i *ircRuntime) runSession(ctx context.Context, api core.RuntimeAPI, buses []string) error {
-	_ = api
-	_ = buses
+func (i *ircRuntime) runSession(ctx context.Context, api core.RuntimeAPI, remoteToChannel map[string]string, transportID int) error {
+	i.joinMappedChannels(remoteToChannel)
 	lastActivity := time.Now()
 	lastPing := time.Time{}
 	for {
@@ -170,16 +176,280 @@ func (i *ircRuntime) runSession(ctx context.Context, api core.RuntimeAPI, buses 
 			return err
 		}
 		lastActivity = time.Now()
-		switch ircCommand(line) {
-		case "PING":
-			if err := i.handlePing(line); err != nil {
+		if err := i.handleLine(api, remoteToChannel, transportID, line); err != nil {
+			if err == errReconnect {
 				return errReconnect
 			}
-		case "PONG":
-			// heartbeat acknowledgment
+			if i.logger != nil {
+				i.logger.Warn("irc dispatch error", "error", err)
+			}
 		}
 	}
 }
+
+func (i *ircRuntime) handleLine(api core.RuntimeAPI, remoteToChannel map[string]string, transportID int, line string) error {
+	switch ircCommand(line) {
+	case "PING":
+		if err := i.handlePing(line); err != nil {
+			return errReconnect
+		}
+	case "PONG":
+		return nil
+	case "JOIN":
+		prefix, params, trailing := parseIRCLine(line)
+		nick := nickFromPrefix(prefix)
+		channel := strings.TrimPrefix(firstParamOrTrailing(params, trailing), ":")
+		if channel == "" || nick == "" {
+			return nil
+		}
+		busID, ok := remoteToChannel[channel]
+		if !ok {
+			i.logUnmapped("JOIN", channel)
+			return nil
+		}
+		i.addMember(channel, nick)
+		if strings.EqualFold(nick, i.activeNick) {
+			_ = i.sendRaw("NAMES " + channel)
+		}
+		return i.publishMemberSnapshot(api, channel, busID, transportID, nick)
+	case "PART":
+		prefix, params, _ := parseIRCLine(line)
+		nick := nickFromPrefix(prefix)
+		if nick == "" || len(params) == 0 {
+			return nil
+		}
+		channel := params[0]
+		busID, ok := remoteToChannel[channel]
+		if !ok {
+			i.logUnmapped("PART", channel)
+			return nil
+		}
+		i.removeMember(channel, nick)
+		return i.publishMemberSnapshot(api, channel, busID, transportID, nick)
+	case "KICK":
+		prefix, params, _ := parseIRCLine(line)
+		nick := nickFromPrefix(prefix)
+		if len(params) < 2 {
+			return nil
+		}
+		channel, target := params[0], params[1]
+		busID, ok := remoteToChannel[channel]
+		if !ok {
+			i.logUnmapped("KICK", channel)
+			return nil
+		}
+		i.removeMember(channel, target)
+		if strings.EqualFold(target, i.activeNick) {
+			delete(i.members, channel)
+		}
+		if nick == "" {
+			nick = target
+		}
+		return i.publishMemberSnapshot(api, channel, busID, transportID, nick)
+	case "QUIT":
+		prefix, _, _ := parseIRCLine(line)
+		nick := nickFromPrefix(prefix)
+		if nick == "" {
+			return nil
+		}
+		for channel, busID := range remoteToChannel {
+			if i.removeMember(channel, nick) {
+				if err := i.publishMemberSnapshot(api, channel, busID, transportID, nick); err != nil {
+					return err
+				}
+			}
+		}
+	case "NICK":
+		prefix, params, trailing := parseIRCLine(line)
+		oldNick := nickFromPrefix(prefix)
+		newNick := firstParamOrTrailing(params, trailing)
+		if oldNick == "" || newNick == "" {
+			return nil
+		}
+		if strings.EqualFold(oldNick, i.activeNick) {
+			i.activeNick = newNick
+		}
+		for channel, busID := range remoteToChannel {
+			if i.renameMember(channel, oldNick, newNick) {
+				if err := i.publishMemberSnapshot(api, channel, busID, transportID, newNick); err != nil {
+					return err
+				}
+			}
+		}
+	case "353":
+		_, params, trailing := parseIRCLine(line)
+		if len(params) < 3 {
+			return nil
+		}
+		channel := params[2]
+		if _, ok := remoteToChannel[channel]; !ok {
+			i.logUnmapped("353", channel)
+			return nil
+		}
+		for _, rawName := range strings.Fields(trailing) {
+			nick := stripUserPrefix(rawName)
+			if nick != "" {
+				i.addNamesBuf(channel, nick)
+			}
+		}
+	case "366":
+		_, params, _ := parseIRCLine(line)
+		if len(params) < 2 {
+			return nil
+		}
+		channel := params[1]
+		busID, ok := remoteToChannel[channel]
+		if !ok {
+			i.logUnmapped("366", channel)
+			return nil
+		}
+		i.commitNamesBuf(channel)
+		return i.publishMemberSnapshot(api, channel, busID, transportID, i.activeNick)
+	}
+	return nil
+}
+
+func (i *ircRuntime) joinMappedChannels(remoteToChannel map[string]string) {
+	channels := make([]string, 0, len(remoteToChannel))
+	for channel := range remoteToChannel {
+		channels = append(channels, channel)
+	}
+	sort.Strings(channels)
+	for _, channel := range channels {
+		if err := i.sendRaw("JOIN " + channel); err != nil && i.logger != nil {
+			i.logger.Warn("irc join failed", "channel", channel, "error", err)
+		}
+	}
+}
+
+func (i *ircRuntime) publishMemberSnapshot(api core.RuntimeAPI, channel, busID string, transportID int, actorNick string) error {
+	members := i.memberListForChannel(channel)
+	body, err := json.Marshal(members)
+	if err != nil {
+		return fmt.Errorf("marshal member snapshot: %w", err)
+	}
+	transport := "IRC"
+	event := model.Event{Kind: model.EventNames, Sender: transportID, Source: model.SourceRef{Transport: transport, BusID: busID}, Message: stringPtr(string(body)), CreatedAt: time.Now()}
+	if actorNick != "" {
+		event.Username = stringPtr(actorNick)
+	}
+	return api.Publish(busID, event)
+}
+
+func (i *ircRuntime) memberListForChannel(channel string) []string {
+	members := i.members[channel]
+	list := make([]string, 0, len(members))
+	for _, nick := range members {
+		list = append(list, nick)
+	}
+	sort.Strings(list)
+	return list
+}
+
+func (i *ircRuntime) addMember(channel, nick string) {
+	if i.members[channel] == nil {
+		i.members[channel] = map[string]string{}
+	}
+	i.members[channel][strings.ToLower(nick)] = nick
+}
+
+func (i *ircRuntime) removeMember(channel, nick string) bool {
+	if i.members[channel] == nil {
+		return false
+	}
+	key := strings.ToLower(nick)
+	if _, ok := i.members[channel][key]; !ok {
+		return false
+	}
+	delete(i.members[channel], key)
+	return true
+}
+
+func (i *ircRuntime) renameMember(channel, oldNick, newNick string) bool {
+	if i.members[channel] == nil {
+		return false
+	}
+	oldKey := strings.ToLower(oldNick)
+	if _, ok := i.members[channel][oldKey]; !ok {
+		return false
+	}
+	delete(i.members[channel], oldKey)
+	i.members[channel][strings.ToLower(newNick)] = newNick
+	return true
+}
+
+func (i *ircRuntime) addNamesBuf(channel, nick string) {
+	if i.namesBuf[channel] == nil {
+		i.namesBuf[channel] = map[string]string{}
+	}
+	i.namesBuf[channel][strings.ToLower(nick)] = nick
+}
+
+func (i *ircRuntime) commitNamesBuf(channel string) {
+	if i.namesBuf[channel] == nil {
+		return
+	}
+	i.members[channel] = i.namesBuf[channel]
+	delete(i.namesBuf, channel)
+}
+
+func (i *ircRuntime) logUnmapped(command, channel string) {
+	if i.logger != nil {
+		i.logger.Warn("irc unmapped channel event dropped", "command", command, "channel", channel)
+	}
+}
+
+func parseIRCLine(line string) (prefix string, params []string, trailing string) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return "", nil, ""
+	}
+	if strings.HasPrefix(trimmed, ":") {
+		sp := strings.Index(trimmed, " ")
+		if sp > 0 {
+			prefix = trimmed[1:sp]
+			trimmed = strings.TrimSpace(trimmed[sp+1:])
+		}
+	}
+	if sp := strings.Index(trimmed, " "); sp >= 0 {
+		trimmed = strings.TrimSpace(trimmed[sp+1:])
+	} else {
+		return prefix, nil, ""
+	}
+	if strings.HasPrefix(trimmed, ":") {
+		return prefix, nil, strings.TrimPrefix(trimmed, ":")
+	}
+	if idx := strings.Index(trimmed, " :"); idx >= 0 {
+		params = strings.Fields(trimmed[:idx])
+		trailing = strings.TrimPrefix(trimmed[idx+1:], ":")
+		return
+	}
+	params = strings.Fields(trimmed)
+	return
+}
+
+func nickFromPrefix(prefix string) string {
+	if prefix == "" {
+		return ""
+	}
+	if nick, _, ok := strings.Cut(prefix, "!"); ok {
+		return nick
+	}
+	return prefix
+}
+
+func firstParamOrTrailing(params []string, trailing string) string {
+	if len(params) > 0 {
+		return params[0]
+	}
+	return trailing
+}
+
+func stripUserPrefix(name string) string {
+	return strings.TrimLeft(name, "~&@%+")
+}
+
+func stringPtr(v string) *string { return &v }
 
 func (i *ircRuntime) readLine() (string, error) {
 	line, err := i.reader.ReadString('\n')

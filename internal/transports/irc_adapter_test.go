@@ -4,12 +4,16 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nemored/pipo/internal/config"
+	"github.com/nemored/pipo/internal/model"
 )
 
 func TestIRCEndpoint(t *testing.T) {
@@ -80,5 +84,73 @@ func TestIRCRegisterNicknameCollisionFallback(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("server validation: %v", err)
+	}
+}
+
+type captureRuntimeAPI struct {
+	events map[string][]model.Event
+}
+
+func (c *captureRuntimeAPI) Publish(busID string, event model.Event) error {
+	if c.events == nil {
+		c.events = map[string][]model.Event{}
+	}
+	c.events[busID] = append(c.events[busID], event)
+	return nil
+}
+
+func (c *captureRuntimeAPI) Subscribe(_ context.Context, _ string, _ int) (<-chan model.Event, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func TestIRCHandleLineMembershipLifecycle(t *testing.T) {
+	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, nil)
+	rt.activeNick = "pipo"
+	rt.writer = bufio.NewWriter(io.Discard)
+	api := &captureRuntimeAPI{}
+	mapping := map[string]string{"#mapped": "bus-1"}
+
+	lines := []string{
+		":pipo!u@h JOIN :#mapped",
+		":irc 353 pipo = #mapped :pipo alice",
+		":irc 366 pipo #mapped :End of NAMES list",
+		":alice!u@h JOIN :#mapped",
+		":alice!u@h NICK :alice2",
+		":alice2!u@h PART #mapped :bye",
+		":bob!u@h JOIN :#mapped",
+		":bob!u@h QUIT :gone",
+	}
+	for _, line := range lines {
+		if err := rt.handleLine(api, mapping, 42, line); err != nil {
+			t.Fatalf("handleLine(%q): %v", line, err)
+		}
+	}
+
+	events := api.events["bus-1"]
+	if len(events) == 0 {
+		t.Fatalf("expected names events")
+	}
+	last := events[len(events)-1]
+	if last.Kind != model.EventNames {
+		t.Fatalf("expected names event, got %s", last.Kind)
+	}
+	if last.Message == nil || *last.Message != "[\"pipo\"]" {
+		t.Fatalf("unexpected final member snapshot: %#v", last.Message)
+	}
+
+	members := rt.memberListForChannel("#mapped")
+	if !reflect.DeepEqual(members, []string{"pipo"}) {
+		t.Fatalf("unexpected members: %v", members)
+	}
+}
+
+func TestIRCHandleLineUnmappedDropped(t *testing.T) {
+	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, slog.Default())
+	api := &captureRuntimeAPI{}
+	if err := rt.handleLine(api, map[string]string{"#mapped": "bus-1"}, 7, ":other!u@h JOIN :#unmapped"); err != nil {
+		t.Fatalf("handle unmapped join: %v", err)
+	}
+	if len(api.events) != 0 {
+		t.Fatalf("expected no events for unmapped channel, got %#v", api.events)
 	}
 }
