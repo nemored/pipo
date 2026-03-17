@@ -324,6 +324,23 @@ pub async fn inner_main() -> anyhow::Result<()> {
                                );",
                 )?;
 
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS slack_render_log (
+                                   id                INTEGER PRIMARY KEY,
+                                   rendered_at       TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+                                   event_id          TEXT,
+                                   ts                TEXT,
+                                   source_mode       TEXT,
+                                   rendered_text     TEXT,
+                                   attachment_count  INTEGER,
+                                   subtype           TEXT,
+                                   irc_flag          INTEGER,
+                                   is_edit           INTEGER,
+                                   channel_id        TEXT,
+                                   channel_name      TEXT
+                               );",
+                )?;
+
                 Ok(
                     match conn.query_row(
                         "SELECT id FROM messages 
