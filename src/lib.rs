@@ -13,6 +13,7 @@ use serde_json;
 use tokio::{fs::File, io::AsyncReadExt, sync::broadcast};
 
 mod discord;
+pub mod integration;
 mod irc;
 mod mumble;
 pub(crate) mod protos;
