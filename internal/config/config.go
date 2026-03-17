@@ -27,6 +27,9 @@ type Transport struct {
 	Nickname            string            `json:"nickname,omitempty"`
 	Server              string            `json:"server,omitempty"`
 	UseTLS              bool              `json:"use_tls,omitempty"`
+	IRCServerPort       int               `json:"port,omitempty"`
+	IRCTimeoutSeconds   int               `json:"timeout_seconds,omitempty"`
+	IRCPass             string            `json:"pass,omitempty"`
 	ImgRoot             string            `json:"img_root,omitempty"`
 	Token               string            `json:"token,omitempty"`
 	BotToken            string            `json:"bot_token,omitempty"`
@@ -115,6 +118,9 @@ func decodeTransport(raw []byte, index int) (Transport, error) {
 			Nickname       string            `json:"nickname"`
 			Server         string            `json:"server"`
 			UseTLS         bool              `json:"use_tls"`
+			Port           *int              `json:"port"`
+			TimeoutSeconds *int              `json:"timeout_seconds"`
+			Pass           *string           `json:"pass"`
 			ImgRoot        string            `json:"img_root"`
 			ChannelMapping map[string]string `json:"channel_mapping"`
 		}
@@ -125,6 +131,15 @@ func decodeTransport(raw []byte, index int) (Transport, error) {
 			return Transport{}, fmt.Errorf("%s (IRC): %w", prefix, err)
 		}
 		t.Nickname, t.Server, t.UseTLS, t.ImgRoot, t.ChannelMapping = cfg.Nickname, cfg.Server, cfg.UseTLS, cfg.ImgRoot, cfg.ChannelMapping
+		if cfg.Port != nil {
+			t.IRCServerPort = *cfg.Port
+		}
+		if cfg.TimeoutSeconds != nil {
+			t.IRCTimeoutSeconds = *cfg.TimeoutSeconds
+		}
+		if cfg.Pass != nil {
+			t.IRCPass = *cfg.Pass
+		}
 	case "Discord":
 		var cfg struct {
 			Kind           string            `json:"transport"`
