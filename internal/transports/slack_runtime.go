@@ -247,12 +247,14 @@ func (s *slackRuntime) handleEventsAPI(raw json.RawMessage, api core.RuntimeAPI,
 			Channel   string `json:"channel"`
 			Text      string `json:"text"`
 			TS        string `json:"ts"`
+			ThreadTS  string `json:"thread_ts"`
 			DeletedTS string `json:"deleted_ts"`
 			Message   struct {
-				User    string `json:"user"`
-				Text    string `json:"text"`
-				TS      string `json:"ts"`
-				Channel string `json:"channel"`
+				User     string `json:"user"`
+				Text     string `json:"text"`
+				TS       string `json:"ts"`
+				ThreadTS string `json:"thread_ts"`
+				Channel  string `json:"channel"`
 			} `json:"message"`
 		}
 		if err := json.Unmarshal(raw, &event); err != nil {
@@ -260,9 +262,9 @@ func (s *slackRuntime) handleEventsAPI(raw json.RawMessage, api core.RuntimeAPI,
 		}
 		switch event.Subtype {
 		case "":
-			s.publishSlackTextEvent(api, remoteToChannel, transportID, event.Channel, event.User, event.Text, event.TS, false)
+			s.publishSlackTextEvent(api, remoteToChannel, transportID, event.Channel, event.User, event.Text, event.TS, event.ThreadTS, false)
 		case "message_changed":
-			s.publishSlackTextEvent(api, remoteToChannel, transportID, firstNonEmptySlack(event.Channel, event.Message.Channel), event.Message.User, event.Message.Text, event.Message.TS, true)
+			s.publishSlackTextEvent(api, remoteToChannel, transportID, firstNonEmptySlack(event.Channel, event.Message.Channel), event.Message.User, event.Message.Text, event.Message.TS, event.Message.ThreadTS, true)
 		case "message_deleted":
 			s.publishSlackDeleteEvent(api, remoteToChannel, transportID, event.Channel, event.DeletedTS)
 		}
@@ -319,7 +321,7 @@ func (s *slackRuntime) handleEventsAPI(raw json.RawMessage, api core.RuntimeAPI,
 	}
 }
 
-func (s *slackRuntime) publishSlackTextEvent(api core.RuntimeAPI, remoteToChannel map[string]string, transportID int, channelID, userID, text, ts string, isEdit bool) {
+func (s *slackRuntime) publishSlackTextEvent(api core.RuntimeAPI, remoteToChannel map[string]string, transportID int, channelID, userID, text, ts, threadTS string, isEdit bool) {
 	if strings.TrimSpace(ts) == "" {
 		return
 	}
@@ -340,10 +342,28 @@ func (s *slackRuntime) publishSlackTextEvent(api core.RuntimeAPI, remoteToChanne
 		IsEdit:   isEdit,
 		Metadata: map[string]string{"slack_channel_id": channelID, "slack_channel_name": s.channelNameForID(channelID)},
 	}
+	if normalizedThreadTS := normalizeSlackThreadTS(ts, threadTS); normalizedThreadTS != "" {
+		norm.Thread = &model.ThreadRef{SlackThreadTS: &normalizedThreadTS}
+	}
 	s.attachInboundPipoID(&norm, ts)
 	if err := api.Publish(busID, norm); err != nil && s.logger != nil {
 		s.logger.Warn("slack inbound publish failed", "bus_id", busID, "error", err)
 	}
+}
+
+func normalizeSlackThreadTS(ts, threadTS string) string {
+	ts = strings.TrimSpace(ts)
+	threadTS = strings.TrimSpace(threadTS)
+	if threadTS == "" {
+		return ""
+	}
+	if ts == "" {
+		return threadTS
+	}
+	if threadTS == ts {
+		return ts
+	}
+	return threadTS
 }
 
 func (s *slackRuntime) publishSlackDeleteEvent(api core.RuntimeAPI, remoteToChannel map[string]string, transportID int, channelID, ts string) {
@@ -510,8 +530,11 @@ func (s *slackRuntime) forwardOutboundEvent(busID string, channelToRemote map[st
 	if ev.Kind == model.EventDelete || ev.Kind == model.EventReaction || ev.IsEdit {
 		return s.forwardOutboundMutation(ev, remoteID)
 	}
-	payload, ok := buildSlackOutboundPayload(ev, remoteID)
-	if !ok {
+	payload, isRootPost, err := s.buildSlackOutboundPayloadForEvent(ev, remoteID)
+	if err != nil {
+		return err
+	}
+	if !isRootPost {
 		return nil
 	}
 	ts, err := s.callChatPostMessage(payload)
@@ -519,6 +542,62 @@ func (s *slackRuntime) forwardOutboundEvent(busID string, channelToRemote map[st
 		return err
 	}
 	return s.recordOutboundSlackRef(ev, ts)
+}
+
+func (s *slackRuntime) buildSlackOutboundPayloadForEvent(ev model.Event, channelID string) (map[string]any, bool, error) {
+	payload, ok := buildSlackOutboundPayload(ev, channelID)
+	if !ok {
+		return nil, false, nil
+	}
+	if ev.Thread == nil {
+		return payload, true, nil
+	}
+	if ev.Thread.SlackThreadTS != nil && strings.TrimSpace(*ev.Thread.SlackThreadTS) != "" {
+		return payload, true, nil
+	}
+	if ev.Thread.DiscordThread == nil || s.store == nil {
+		return payload, true, nil
+	}
+	threadID := *ev.Thread.DiscordThread
+	threadTS, err := s.store.SelectSlackByDiscord(context.Background(), threadID)
+	if err != nil {
+		return nil, false, err
+	}
+	if threadTS != nil && strings.TrimSpace(*threadTS) != "" {
+		payload["thread_ts"] = *threadTS
+		return payload, true, nil
+	}
+
+	rootTS, err := s.callChatPostMessage(payload)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.recordOutboundSlackRef(ev, rootTS); err != nil {
+		return nil, false, err
+	}
+	if err := s.recordDiscordThreadMapping(threadID, rootTS); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+func (s *slackRuntime) recordDiscordThreadMapping(threadID uint64, slackTS string) error {
+	if s.store == nil || strings.TrimSpace(slackTS) == "" {
+		return nil
+	}
+	ctx := context.Background()
+	pipoID, err := s.store.SelectIDByDiscord(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	if pipoID == nil {
+		id, err := s.store.InsertOrReplaceDiscord(ctx, threadID)
+		if err != nil {
+			return err
+		}
+		pipoID = &id
+	}
+	return s.store.UpdateSlackByID(ctx, *pipoID, slackTS)
 }
 
 func (s *slackRuntime) forwardOutboundMutation(ev model.Event, channelID string) error {

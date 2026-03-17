@@ -149,6 +149,26 @@ func TestSlackRuntimeEventsAPIUpdatesCacheAndPublishes(t *testing.T) {
 	}
 }
 
+func TestSlackRuntimeInboundThreadNormalization(t *testing.T) {
+	rt := &slackRuntime{userDisplayName: map[string]string{"U1": "Ali"}, channelMeta: map[string]slackChannelMeta{"C1": {ID: "C1", Name: "general"}}}
+	api := &captureRuntimeAPI{}
+	mapping := map[string]string{"C1": "main"}
+
+	rt.handleEventsAPI([]byte(`{"type":"message","user":"U1","channel":"C1","text":"root","ts":"1700.1","thread_ts":"1700.1"}`), api, mapping, 1)
+	rt.handleEventsAPI([]byte(`{"type":"message","user":"U1","channel":"C1","text":"reply","ts":"1700.2","thread_ts":"1700.1"}`), api, mapping, 1)
+
+	events := api.events["main"]
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[0].Thread == nil || events[0].Thread.SlackThreadTS == nil || *events[0].Thread.SlackThreadTS != "1700.1" {
+		t.Fatalf("expected root thread ts to be captured, got %+v", events[0].Thread)
+	}
+	if events[1].Thread == nil || events[1].Thread.SlackThreadTS == nil || *events[1].Thread.SlackThreadTS != "1700.1" {
+		t.Fatalf("expected reply to reference root thread ts, got %+v", events[1].Thread)
+	}
+}
+
 func TestBuildSlackOutboundPayloadKinds(t *testing.T) {
 	msg := "hello"
 	name := "BridgeBot"
@@ -272,6 +292,70 @@ func TestSlackRuntimeForwardOutboundRecordsSlackReference(t *testing.T) {
 	}
 	if *pipo == id {
 		t.Fatalf("expected insert path to allocate a new pipo id, got existing id %d", *pipo)
+	}
+}
+
+func TestSlackRuntimeForwardOutboundCrossTransportThreadTranslation(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := store.OpenSQLite(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqlite.Close()
+
+	discordThreadID := uint64(1234)
+	pipoID, err := sqlite.InsertOrReplaceDiscord(ctx, discordThreadID)
+	if err != nil {
+		t.Fatalf("insert discord mapping: %v", err)
+	}
+
+	msg := "reply"
+	var seen []map[string]any
+	rt := &slackRuntime{botToken: "xoxb-test", store: sqlite, http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat.postMessage" {
+			t.Fatalf("unexpected request path: %s", req.URL.Path)
+		}
+		defer req.Body.Close()
+		decoded := map[string]any{}
+		if err := json.NewDecoder(req.Body).Decode(&decoded); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		seen = append(seen, decoded)
+		switch len(seen) {
+		case 1:
+			return jsonResponse(`{"ok":true,"ts":"1700000000.200"}`), nil
+		case 2:
+			return jsonResponse(`{"ok":true,"ts":"1700000000.201"}`), nil
+		default:
+			t.Fatalf("unexpected post count: %d", len(seen))
+			return nil, nil
+		}
+	})}}
+
+	evRoot := model.Event{Kind: model.EventText, Message: &msg, Sender: 2, Thread: &model.ThreadRef{DiscordThread: &discordThreadID}}
+	if err := rt.forwardOutboundEvent("main", map[string]string{"main": "C1"}, 1, evRoot); err != nil {
+		t.Fatalf("forward root event failed: %v", err)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("expected only root post call, got %d", len(seen))
+	}
+	if _, has := seen[0]["thread_ts"]; has {
+		t.Fatalf("root post should not set thread_ts: %+v", seen[0])
+	}
+	storedRootTS, err := sqlite.SelectSlackByID(ctx, pipoID)
+	if err != nil || storedRootTS == nil || *storedRootTS != "1700000000.200" {
+		t.Fatalf("expected mapped thread root ts, got=%v err=%v", storedRootTS, err)
+	}
+
+	evReply := model.Event{Kind: model.EventText, Message: &msg, Sender: 2, Thread: &model.ThreadRef{DiscordThread: &discordThreadID}}
+	if err := rt.forwardOutboundEvent("main", map[string]string{"main": "C1"}, 1, evReply); err != nil {
+		t.Fatalf("forward reply event failed: %v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected second post call for reply, got %d", len(seen))
+	}
+	if seen[1]["thread_ts"] != "1700000000.200" {
+		t.Fatalf("expected reply thread_ts to use mapped root ts, got %+v", seen[1])
 	}
 }
 
