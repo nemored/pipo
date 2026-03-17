@@ -154,3 +154,75 @@ func TestIRCHandleLineUnmappedDropped(t *testing.T) {
 		t.Fatalf("expected no events for unmapped channel, got %#v", api.events)
 	}
 }
+
+func TestParseCTCP(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		ok      bool
+		kind    ctcpKind
+		command string
+		body    string
+	}{
+		{name: "not ctcp", raw: "hello", ok: false},
+		{name: "ctcp action", raw: "\x01ACTION waves\x01", ok: true, kind: ctcpAction, command: "ACTION", body: "waves"},
+		{name: "unsupported command", raw: "\x01VERSION\x01", ok: true, kind: ctcpUnsupported, command: "VERSION"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg, ok := parseCTCP(tt.raw)
+			if ok != tt.ok {
+				t.Fatalf("parseCTCP ok=%v want %v", ok, tt.ok)
+			}
+			if !ok {
+				return
+			}
+			if msg.Kind != tt.kind || msg.Command != tt.command || msg.Body != tt.body {
+				t.Fatalf("unexpected ctcp parse result: %#v", msg)
+			}
+		})
+	}
+}
+
+func TestIRCHandleLinePrivmsgCTCPClassification(t *testing.T) {
+	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, nil)
+	api := &captureRuntimeAPI{}
+	mapping := map[string]string{"#mapped": "bus-1"}
+
+	lines := []string{
+		":alice!u@h PRIVMSG #mapped :hello world",
+		":alice!u@h PRIVMSG #mapped :\x01ACTION waves\x01",
+		":alice!u@h PRIVMSG #mapped :\x01VERSION\x01",
+	}
+	for _, line := range lines {
+		if err := rt.handleLine(api, mapping, 5, line); err != nil {
+			t.Fatalf("handleLine(%q): %v", line, err)
+		}
+	}
+
+	events := api.events["bus-1"]
+	if len(events) != 2 {
+		t.Fatalf("expected 2 published events (text + action), got %d", len(events))
+	}
+	if events[0].Kind != model.EventText || events[0].Message == nil || *events[0].Message != "hello world" {
+		t.Fatalf("unexpected text event: %#v", events[0])
+	}
+	if events[1].Kind != model.EventAction || events[1].Message == nil || *events[1].Message != "waves" {
+		t.Fatalf("unexpected action event: %#v", events[1])
+	}
+}
+
+func TestFormatIRCOutboundMessage(t *testing.T) {
+	msg := "waves"
+	payload, ok := formatIRCOutboundMessage(model.Event{Kind: model.EventAction, Message: &msg})
+	if !ok || payload != "\x01ACTION waves\x01" {
+		t.Fatalf("unexpected action payload: %q (ok=%v)", payload, ok)
+	}
+
+	text := "hello"
+	payload, ok = formatIRCOutboundMessage(model.Event{Kind: model.EventText, Message: &text})
+	if !ok || payload != "hello" {
+		t.Fatalf("unexpected text payload: %q (ok=%v)", payload, ok)
+	}
+}
