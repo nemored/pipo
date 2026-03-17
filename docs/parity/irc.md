@@ -13,5 +13,6 @@
 
 ## Pending
 - CTCP action mapping parity.
-- Edit/delete/reaction compatibility paths (where represented through normalized events).
+- Edit/delete compatibility translation from IRC command conventions (`!edit`, `!delete`) with compatibility metadata and capability-gated fallback annotations.
+- Reaction compatibility translation from configurable IRC command prefix (`react ` by default), gated by explicit capability toggle.
 - DB interactions for `pipo_id` allocation and lookup on IRC-originated messages.

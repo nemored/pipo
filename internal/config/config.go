@@ -44,6 +44,9 @@ type Transport struct {
 	ChannelMapping      map[string]string `json:"channel_mapping,omitempty"`
 	VoiceChannelMapping map[string]string `json:"voice_channel_mapping,omitempty"`
 	Buses               []string          `json:"buses,omitempty"`
+	IRCCompatMode       string            `json:"compat_mode,omitempty"`
+	IRCCompatReactions  bool              `json:"compat_reactions,omitempty"`
+	IRCReactionPrefix   string            `json:"reaction_prefix,omitempty"`
 }
 
 func (t *Transport) UnmarshalJSON(data []byte) error {
@@ -114,15 +117,18 @@ func decodeTransport(raw []byte, index int) (Transport, error) {
 	switch tag.Kind {
 	case "IRC":
 		var cfg struct {
-			Kind           string            `json:"transport"`
-			Nickname       string            `json:"nickname"`
-			Server         string            `json:"server"`
-			UseTLS         bool              `json:"use_tls"`
-			Port           *int              `json:"port"`
-			TimeoutSeconds *int              `json:"timeout_seconds"`
-			Pass           *string           `json:"pass"`
-			ImgRoot        string            `json:"img_root"`
-			ChannelMapping map[string]string `json:"channel_mapping"`
+			Kind            string            `json:"transport"`
+			Nickname        string            `json:"nickname"`
+			Server          string            `json:"server"`
+			UseTLS          bool              `json:"use_tls"`
+			Port            *int              `json:"port"`
+			TimeoutSeconds  *int              `json:"timeout_seconds"`
+			Pass            *string           `json:"pass"`
+			ImgRoot         string            `json:"img_root"`
+			ChannelMapping  map[string]string `json:"channel_mapping"`
+			CompatMode      *string           `json:"compat_mode"`
+			CompatReactions *bool             `json:"compat_reactions"`
+			ReactionPrefix  *string           `json:"reaction_prefix"`
 		}
 		if err := decodeStrict(raw, &cfg); err != nil {
 			return Transport{}, fmt.Errorf("%s (IRC): %w", prefix, err)
@@ -131,6 +137,15 @@ func decodeTransport(raw []byte, index int) (Transport, error) {
 			return Transport{}, fmt.Errorf("%s (IRC): %w", prefix, err)
 		}
 		t.Nickname, t.Server, t.UseTLS, t.ImgRoot, t.ChannelMapping = cfg.Nickname, cfg.Server, cfg.UseTLS, cfg.ImgRoot, cfg.ChannelMapping
+		if cfg.CompatMode != nil {
+			t.IRCCompatMode = *cfg.CompatMode
+		}
+		if cfg.CompatReactions != nil {
+			t.IRCCompatReactions = *cfg.CompatReactions
+		}
+		if cfg.ReactionPrefix != nil {
+			t.IRCReactionPrefix = *cfg.ReactionPrefix
+		}
 		if cfg.Port != nil {
 			t.IRCServerPort = *cfg.Port
 		}

@@ -226,3 +226,51 @@ func TestFormatIRCOutboundMessage(t *testing.T) {
 		t.Fatalf("unexpected text payload: %q (ok=%v)", payload, ok)
 	}
 }
+
+func TestIRCCompatSyntheticEditDeleteAndReaction(t *testing.T) {
+	rt := newIRCRuntime(config.Transport{Nickname: "pipo", IRCCompatMode: "synthetic", IRCCompatReactions: true, IRCReactionPrefix: "react "}, nil)
+	api := &captureRuntimeAPI{}
+	mapping := map[string]string{"#mapped": "bus-1"}
+
+	lines := []string{
+		":alice!u@h PRIVMSG #mapped :!edit 101 rewritten",
+		":alice!u@h PRIVMSG #mapped :!delete 102",
+		":alice!u@h PRIVMSG #mapped :react 😀 103",
+	}
+	for _, line := range lines {
+		if err := rt.handleLine(api, mapping, 5, line); err != nil {
+			t.Fatalf("handleLine(%q): %v", line, err)
+		}
+	}
+	events := api.events["bus-1"]
+	if len(events) != 3 {
+		t.Fatalf("expected 3 compat events, got %d", len(events))
+	}
+	if events[0].Kind != model.EventText || !events[0].IsEdit || events[0].Message == nil || *events[0].Message != "rewritten" {
+		t.Fatalf("unexpected edit event: %#v", events[0])
+	}
+	if events[1].Kind != model.EventDelete || events[1].Source.MessageID == nil || *events[1].Source.MessageID != "102" {
+		t.Fatalf("unexpected delete event: %#v", events[1])
+	}
+	if events[2].Kind != model.EventReaction || events[2].Emoji == nil || *events[2].Emoji != "😀" || events[2].Source.MessageID == nil || *events[2].Source.MessageID != "103" {
+		t.Fatalf("unexpected reaction event: %#v", events[2])
+	}
+	if events[0].Metadata["native"] != "false" || events[2].Metadata["compat_op"] != "reaction" {
+		t.Fatalf("unexpected compat metadata: %#v %#v", events[0].Metadata, events[2].Metadata)
+	}
+}
+
+func TestIRCCompatDisabledCreatesAnnotation(t *testing.T) {
+	rt := newIRCRuntime(config.Transport{Nickname: "pipo"}, nil)
+	api := &captureRuntimeAPI{}
+	if err := rt.handleLine(api, map[string]string{"#mapped": "bus-1"}, 5, ":alice!u@h PRIVMSG #mapped :!delete 9"); err != nil {
+		t.Fatalf("handleLine: %v", err)
+	}
+	events := api.events["bus-1"]
+	if len(events) != 1 {
+		t.Fatalf("expected single annotation event, got %d", len(events))
+	}
+	if events[0].Kind != model.EventBot || events[0].Metadata["compat_reason"] != "capability_disabled" {
+		t.Fatalf("unexpected disabled compat annotation: %#v", events[0])
+	}
+}
