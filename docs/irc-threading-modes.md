@@ -11,7 +11,7 @@ Pipo supports configurable IRC thread presentation for each IRC transport block.
 - `thread_excerpt_len` (default: `120`)
   - Max character length for plaintext root excerpts in `↪ reply to ...` prefixes.
 - `show_thread_root_marker` (default: `true`)
-  - Controls whether root messages include `[thread]` in plaintext mode.
+  - Controls whether root messages include a plaintext thread-start announcement, e.g. `started a new thread: … (reply: >>K7F2)`.
 
 ## Migration and operator guidance
 

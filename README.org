@@ -50,7 +50,7 @@ For IRC transports, threaded message presentation can be tuned per transport ent
   - =always=: always emit expanded context lines.
   - =never=: never emit expanded context lines; always use compact token prefixes.
 - =thread_excerpt_len= (default =120=): max character count used for plaintext thread root excerpts.
-- =show_thread_root_marker= (default =true=): when plaintext mode is used for the root post itself, include the =[thread]= marker.
+- =show_thread_root_marker= (default =true=): when plaintext mode is used for the root post itself, emit a thread-start announcement such as =started a new thread: … (reply: >>K7F2)=.
 
 Migration behavior:
 - Existing configs continue to work without changes.
