@@ -17,7 +17,10 @@ use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::{wrappers::BroadcastStream, StreamMap};
 
-use crate::{Attachment, Message, RemoteActor, ThreadRef};
+use crate::{
+    load_irc_presence, upsert_irc_presence, upsert_remote_actor, Attachment, Message, RemoteActor,
+    ThreadRef,
+};
 
 const TRANSPORT_NAME: &str = "IRC";
 const DEFAULT_THREAD_EXCERPT_LEN: usize = 120;
@@ -109,6 +112,7 @@ struct SessionManagerInner {
     transport_id: usize,
     presence_prefix: String,
     capabilities: Arc<Mutex<IrcCapabilityState>>,
+    pool: Pool,
     state: Mutex<HashMap<String, ActorSessionHandle>>,
 }
 
@@ -124,6 +128,7 @@ impl SessionManager {
         transport_id: usize,
         capabilities: Arc<Mutex<IrcCapabilityState>>,
         presence_prefix: String,
+        pool: Pool,
     ) -> Self {
         Self {
             inner: Arc::new(SessionManagerInner {
@@ -131,6 +136,7 @@ impl SessionManager {
                 transport_id,
                 presence_prefix,
                 capabilities,
+                pool,
                 state: Mutex::new(HashMap::new()),
             }),
         }
@@ -144,11 +150,11 @@ impl SessionManager {
     ) -> anyhow::Result<()> {
         let actor_key = format!("{}:{}", actor.transport(), actor.remote_id());
         let channel = outbound.channel.clone();
-        let (sender, nick) = {
+        let initial_nick = self.nick_from_actor(actor, 0);
+        let sender = {
             let mut state = self.inner.state.lock().unwrap();
             let handle = state.entry(actor_key.clone()).or_insert_with(|| {
-                let nick = self.nick_from_actor(actor, 0);
-                let sender = self.spawn_session_task(actor.clone(), nick.clone());
+                let sender = self.spawn_session_task(actor.clone(), initial_nick.clone());
                 ActorSessionHandle {
                     sender,
                     channels: HashMap::new(),
@@ -157,7 +163,7 @@ impl SessionManager {
             });
             *handle.channels.entry(channel).or_insert(0) = 1;
             handle.last_used = Instant::now();
-            (handle.sender.clone(), self.nick_from_actor(actor, 0))
+            handle.sender.clone()
         };
 
         if let Err(err) = sender.send(SessionCommand { outbound, payload }).await {
@@ -165,7 +171,7 @@ impl SessionManager {
             state.remove(&actor_key);
             return Err(anyhow!(
                 "failed to send IRC session command for {}: {}",
-                nick,
+                initial_nick,
                 err
             ));
         }
@@ -181,8 +187,26 @@ impl SessionManager {
         let (tx, mut rx) = mpsc::channel::<SessionCommand>(32);
         let manager = self.clone();
         tokio::spawn(async move {
-            let mut nick_attempt = 0usize;
-            let mut current_nick = initial_nick;
+            let (mut nick_attempt, mut current_nick) =
+                match load_irc_presence(&manager.inner.pool, &actor).await {
+                    Ok(Some((preferred_nick, last_successful_nick, collision_suffix))) => {
+                        let nick_attempt = collision_suffix.max(0) as usize;
+                        let nick = last_successful_nick
+                            .or(preferred_nick)
+                            .unwrap_or(initial_nick.clone());
+                        (nick_attempt, nick)
+                    }
+                    Ok(None) | Err(_) => (0usize, initial_nick),
+                };
+            let _ = upsert_irc_presence(
+                &manager.inner.pool,
+                &actor,
+                Some(&current_nick),
+                None,
+                nick_attempt as i64,
+                false,
+            )
+            .await;
             let mut connected: Option<(Client, irc::client::ClientStream)> = None;
             let born_at = Instant::now();
             let mut idle_deadline = tokio::time::Instant::now() + ACTOR_SESSION_IDLE_TIMEOUT;
@@ -193,11 +217,15 @@ impl SessionManager {
                         idle_deadline = tokio::time::Instant::now() + ACTOR_SESSION_IDLE_TIMEOUT;
                         if connected.is_none() {
                             match manager.connect_actor_client(&current_nick).await {
-                                Ok(client_stream) => connected = Some(client_stream),
+                                Ok(client_stream) => {
+                                    let _ = upsert_irc_presence(&manager.inner.pool, &actor, Some(&current_nick), Some(&current_nick), nick_attempt as i64, true).await;
+                                    connected = Some(client_stream)
+                                },
                                 Err(err) => {
                                     eprintln!("Failed to connect actor IRC session {}: {:#}", current_nick, err);
                                     nick_attempt += 1;
                                     current_nick = manager.nick_from_actor(&actor, nick_attempt);
+                                    let _ = upsert_irc_presence(&manager.inner.pool, &actor, Some(&current_nick), None, nick_attempt as i64, false).await;
                                     continue;
                                 }
                             }
@@ -214,6 +242,7 @@ impl SessionManager {
                             connected = None;
                             nick_attempt += 1;
                             current_nick = manager.nick_from_actor(&actor, nick_attempt);
+                            let _ = upsert_irc_presence(&manager.inner.pool, &actor, Some(&current_nick), None, nick_attempt as i64, false).await;
                         }
                     }
                     _ = tokio::time::sleep_until(idle_deadline) => {
@@ -237,6 +266,7 @@ impl SessionManager {
                                     connected = None;
                                     nick_attempt += 1;
                                     current_nick = manager.nick_from_actor(&actor, nick_attempt);
+                                    let _ = upsert_irc_presence(&manager.inner.pool, &actor, Some(&current_nick), None, nick_attempt as i64, false).await;
                                 }
                             }
                             Some(Err(err)) => {
@@ -471,6 +501,7 @@ impl IRC {
                     .take(2)
                     .collect::<String>()
                     .to_ascii_uppercase(),
+                pool.clone(),
             ))
         } else {
             None
@@ -1373,16 +1404,29 @@ impl IRC {
                 return Ok(());
             }
         }
+        let actor = RemoteActor::new(
+            TRANSPORT_NAME,
+            nickname.clone(),
+            nickname.clone(),
+            Some(avatar_url),
+        );
+        if let Err(e) = upsert_remote_actor(&self.pool, &actor).await {
+            eprintln!("Failed to upsert IRC actor: {}", e);
+        }
+        let _ = upsert_irc_presence(
+            &self.pool,
+            &actor,
+            Some(&self.irc_nick_from_actor(&actor)),
+            None,
+            0,
+            true,
+        )
+        .await;
         let outbound = if RE.is_match(&message) {
             Message::Action {
                 sender: self.transport_id,
                 pipo_id,
-                actor: RemoteActor::new(
-                    TRANSPORT_NAME,
-                    nickname.clone(),
-                    nickname.clone(),
-                    Some(avatar_url),
-                ),
+                actor: actor.clone(),
                 thread,
                 message: Some(content),
                 attachments: None,
@@ -1393,12 +1437,7 @@ impl IRC {
             Message::Text {
                 sender: self.transport_id,
                 pipo_id,
-                actor: RemoteActor::new(
-                    TRANSPORT_NAME,
-                    nickname.clone(),
-                    nickname.clone(),
-                    Some(avatar_url),
-                ),
+                actor,
                 thread,
                 message: Some(content),
                 attachments: None,
@@ -1554,16 +1593,29 @@ impl IRC {
                 .await?;
         }
         let avatar_url = self.get_avatar_url(&nickname).await;
+        let actor = RemoteActor::new(
+            TRANSPORT_NAME,
+            nickname.clone(),
+            nickname.clone(),
+            Some(avatar_url),
+        );
+        if let Err(e) = upsert_remote_actor(&self.pool, &actor).await {
+            eprintln!("Failed to upsert IRC actor: {}", e);
+        }
+        let _ = upsert_irc_presence(
+            &self.pool,
+            &actor,
+            Some(&self.irc_nick_from_actor(&actor)),
+            None,
+            0,
+            true,
+        )
+        .await;
         let outbound = if let Some(message) = RE.captures(&message) {
             Message::Action {
                 sender: self.transport_id,
                 pipo_id,
-                actor: RemoteActor::new(
-                    TRANSPORT_NAME,
-                    nickname.clone(),
-                    nickname.clone(),
-                    Some(avatar_url),
-                ),
+                actor: actor.clone(),
                 thread: None,
                 message: Some(format!("```{}```", message.get(1).unwrap().as_str())),
                 attachments: None,
@@ -1574,12 +1626,7 @@ impl IRC {
             Message::Text {
                 sender: self.transport_id,
                 pipo_id,
-                actor: RemoteActor::new(
-                    TRANSPORT_NAME,
-                    nickname.clone(),
-                    nickname.clone(),
-                    Some(avatar_url),
-                ),
+                actor,
                 thread: None,
                 message: Some(format!("```{}```", message)),
                 attachments: None,

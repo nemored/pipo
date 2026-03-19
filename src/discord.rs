@@ -24,7 +24,7 @@ use serenity::{
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt, StreamMap};
 
-use crate::{Message, RemoteActor, ThreadRef};
+use crate::{upsert_remote_actor, Message, RemoteActor, ThreadRef};
 
 const TRANSPORT_NAME: &'static str = "Discord";
 
@@ -424,6 +424,15 @@ impl RealHandler {
                 _ => Some(attachments),
             };
 
+            let actor = RemoteActor::new(
+                TRANSPORT_NAME,
+                msg.author.id.get().to_string(),
+                msg.author.name.clone(),
+                msg.author.avatar_url(),
+            );
+            if let Err(e) = upsert_remote_actor(&self.pool, &actor).await {
+                eprintln!("Failed to upsert Discord actor: {}", e);
+            }
             let message = if let Some(captures) = RE.captures(&content) {
                 content = match captures.get(1) {
                     Some(c) => c.as_str(),
@@ -433,12 +442,7 @@ impl RealHandler {
                 Message::Action {
                     sender: self.transport_id,
                     pipo_id,
-                    actor: RemoteActor::new(
-                        TRANSPORT_NAME,
-                        msg.author.id.get().to_string(),
-                        msg.author.name.clone(),
-                        msg.author.avatar_url(),
-                    ),
+                    actor: actor.clone(),
                     thread,
                     message: Some(content),
                     attachments,
@@ -449,12 +453,7 @@ impl RealHandler {
                 Message::Text {
                     sender: self.transport_id,
                     pipo_id,
-                    actor: RemoteActor::new(
-                        TRANSPORT_NAME,
-                        msg.author.id.get().to_string(),
-                        msg.author.name.clone(),
-                        msg.author.avatar_url(),
-                    ),
+                    actor: actor.clone(),
                     thread,
                     message: Some(content),
                     attachments,
@@ -530,7 +529,7 @@ impl RealHandler {
         // authentication error, or lack of permissions to post in the
         // channel, so log to stdout when some error happens, with a
         // description of it.
-        let author = match msg.author {
+        let author = match msg.author.clone() {
             Some(s) => s,
             None => return,
         };
@@ -590,6 +589,19 @@ impl RealHandler {
                 }
             }
 
+            let author = match msg.author {
+                Some(author) => author,
+                None => return,
+            };
+            let actor = RemoteActor::new(
+                TRANSPORT_NAME,
+                author.id.get().to_string(),
+                author.name.clone(),
+                author.avatar_url(),
+            );
+            if let Err(e) = upsert_remote_actor(&self.pool, &actor).await {
+                eprintln!("Failed to upsert Discord actor: {}", e);
+            }
             let message = if let Some(captures) = RE.captures(&content) {
                 content = match captures.get(1) {
                     Some(c) => c.as_str(),
@@ -599,12 +611,7 @@ impl RealHandler {
                 Message::Action {
                     sender: self.transport_id,
                     pipo_id,
-                    actor: RemoteActor::new(
-                        TRANSPORT_NAME,
-                        author.id.get().to_string(),
-                        author.name.clone(),
-                        author.avatar_url(),
-                    ),
+                    actor: actor.clone(),
                     thread,
                     message: Some(content),
                     attachments: None,
@@ -615,12 +622,7 @@ impl RealHandler {
                 Message::Text {
                     sender: self.transport_id,
                     pipo_id,
-                    actor: RemoteActor::new(
-                        TRANSPORT_NAME,
-                        author.id.get().to_string(),
-                        author.name.clone(),
-                        author.avatar_url(),
-                    ),
+                    actor: actor.clone(),
                     thread,
                     message: Some(content),
                     attachments: None,
@@ -714,6 +716,10 @@ impl RealHandler {
                 }
             };
 
+            if let Err(e) = upsert_remote_actor(&self.pool, &actor).await {
+                eprintln!("Failed to upsert Discord actor: {}", e);
+            }
+
             let emoji = match reaction.emoji {
                 ReactionType::Custom {
                     animated: _,
@@ -797,6 +803,10 @@ impl RealHandler {
                     }
                 }
             };
+
+            if let Err(e) = upsert_remote_actor(&self.pool, &actor).await {
+                eprintln!("Failed to upsert Discord actor: {}", e);
+            }
 
             let emoji = match reaction.emoji {
                 ReactionType::Custom {
