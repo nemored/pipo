@@ -20,7 +20,9 @@ mod rachni;
 pub mod slack;
 
 use crate::discord::Discord;
-use crate::irc::{ThreadContextRepeat, ThreadFallbackStyle, ThreadPresentationMode, IRC};
+use crate::irc::{
+    IrcPresenceMode, ThreadContextRepeat, ThreadFallbackStyle, ThreadPresentationMode, IRC,
+};
 use crate::mumble::Mumble;
 use crate::rachni::Rachni;
 use crate::slack::Slack;
@@ -252,6 +254,8 @@ enum ConfigTransport {
         thread_excerpt_len: usize,
         #[serde(default = "default_show_thread_root_marker")]
         show_thread_root_marker: bool,
+        #[serde(default)]
+        presence_mode: IrcPresenceMode,
     },
     Discord {
         token: Arc<String>,
@@ -444,6 +448,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
                 thread_context_repeat,
                 thread_excerpt_len,
                 show_thread_root_marker,
+                presence_mode,
             } => {
                 // tokio::spawn maybe?
                 let mut instance = IRC::new(
@@ -460,6 +465,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
                     *thread_context_repeat,
                     *thread_excerpt_len,
                     *show_thread_root_marker,
+                    *presence_mode,
                     transport_id,
                 )
                 .await?;
