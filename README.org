@@ -45,8 +45,8 @@ For IRC transports, threaded message presentation can be tuned per transport ent
 - =thread_fallback_style= (default =compact=): controls plaintext fallback formatting for replies.
   - =compact=: emit tokenized reply prefixes such as =↪ [t:K7F2] alice=.
   - =verbose=: always include the excerpt in fallback, e.g. =↪ [t:K7F2] alice: original root excerpt...=.
-- =thread_context_repeat= (default =first_seen=): controls when expanded context lines are repeated per channel.
-  - =first_seen=: emit one expanded context line for a token the first time it appears in a channel; later replies use compact token prefixes.
+- =thread_context_repeat= (default =activity=): controls when expanded context lines are repeated per channel.
+  - =activity=: emit one expanded context line the first time a token appears in a channel, then repeat it only after enough channel activity has passed. Older =first_seen= configs are still accepted as an alias for this mode.
   - =always=: always emit expanded context lines.
   - =never=: never emit expanded context lines; always use compact token prefixes.
 - =thread_excerpt_len= (default =120=): max character count used for plaintext thread root excerpts.
@@ -54,12 +54,12 @@ For IRC transports, threaded message presentation can be tuned per transport ent
 
 Migration behavior:
 - Existing configs continue to work without changes.
-- If new fields are omitted, defaults are applied (=thread_fallback_style= → =compact=, =thread_context_repeat= → =first_seen=).
-- =first_seen= gives one richer intro line per thread token/channel, then shifts to concise token-only context to reduce noise.
+- If new fields are omitted, defaults are applied (=thread_fallback_style= → =compact=, =thread_context_repeat= → =activity=).
+- =activity= gives one richer intro line per thread token/channel, then reintroduces it after enough channel traffic to help IRC users regain context without repeating it on every reply.
 - Set =verbose +=always= to approximate the prior always-expanded fallback behavior.
 
 IRC user commands for thread replies:
 - =/threads=: shows a bounded list of recent active thread tokens for the current channel (latest 8), with short root summaries.
 - =/threadhelp= (and =/help=): shows reply syntax examples.
 - Reply syntax: =>>TOKEN message= or =/reply TOKEN message=.
-- First-seen fallback context in =first_seen= mode includes a one-time hint like =reply with: >>K7F2 <message>=.
+- Activity-based fallback context still keeps reply tokens stable, e.g. =reply with: >>K7F2 <message>=.

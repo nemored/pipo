@@ -1350,6 +1350,7 @@ impl Slack {
                 channel,
                 previous_message: prev_message,
                 event_ts: _,
+                reply_broadcast,
                 thread_ts,
                 channel_type: _,
                 edited,
@@ -1469,6 +1470,7 @@ impl Slack {
                                     user,
                                     rich_text,
                                     attachments,
+                                    reply_broadcast,
                                     is_edit,
                                     irc_flag,
                                 )
@@ -1485,6 +1487,7 @@ impl Slack {
                                 user,
                                 rich_text,
                                 attachments,
+                                reply_broadcast,
                                 is_edit,
                                 irc_flag,
                             )
@@ -1595,6 +1598,7 @@ impl Slack {
         message_ts: Option<&str>,
         local_author: Option<&str>,
         local_message: Option<&str>,
+        reply_broadcast: bool,
     ) -> anyhow::Result<Option<ThreadRef>> {
         let Some(thread_root_id) = thread_ts else {
             return Ok(None);
@@ -1630,6 +1634,7 @@ impl Slack {
             thread_root_id: Some(thread_root_id),
             root_author: metadata.root_author,
             root_excerpt: metadata.root_excerpt,
+            slack_reply_broadcast: reply_broadcast,
             ..Default::default()
         }))
     }
@@ -1652,6 +1657,7 @@ impl Slack {
                 ts.as_deref(),
                 None,
                 message.as_deref(),
+                false,
             )
             .await?;
         let pipo_id = match ts {
@@ -1720,6 +1726,7 @@ impl Slack {
             user,
             message,
             attachments,
+            None,
             is_edit,
             false,
         )
@@ -1841,6 +1848,7 @@ impl Slack {
                 channel: _,
                 previous_message,
                 event_ts,
+                reply_broadcast,
                 thread_ts,
                 channel_type,
                 edited,
@@ -1863,6 +1871,7 @@ impl Slack {
                 blocks,
                 previous_message,
                 event_ts,
+                reply_broadcast,
                 thread_ts,
                 channel_type,
                 edited,
@@ -2060,6 +2069,7 @@ impl Slack {
         user: Option<String>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
+        reply_broadcast: Option<bool>,
         mut is_edit: bool,
         mut irc_flag: bool,
     ) -> anyhow::Result<()> {
@@ -2087,6 +2097,7 @@ impl Slack {
                 Some(ts.as_str()),
                 Some(username.as_str()),
                 message.as_deref(),
+                reply_broadcast.unwrap_or(false),
             )
             .await?;
         let avatar_url = Slack::get_avatar_url_for_user(&user)?;
@@ -2154,6 +2165,7 @@ impl Slack {
                     channel: _,
                     previous_message: _,
                     event_ts: _,
+                    reply_broadcast: _,
                     thread_ts: _,
                     channel_type: _,
                     edited: _,
@@ -2227,6 +2239,7 @@ impl Slack {
                 channel,
                 previous_message: _,
                 event_ts: _,
+                reply_broadcast: _,
                 thread_ts: _,
                 channel_type: _,
                 edited: _,

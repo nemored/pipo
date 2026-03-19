@@ -103,6 +103,7 @@ pub struct Message {
     pub channel: Option<String>,
     pub previous_message: Option<Box<Event>>,
     pub event_ts: Option<String>,
+    pub reply_broadcast: Option<bool>,
     pub thread_ts: Option<String>,
     pub channel_type: Option<String>,
     pub edited: Option<Edited>,

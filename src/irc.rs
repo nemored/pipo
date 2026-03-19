@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -23,6 +23,9 @@ const TRANSPORT_NAME: &'static str = "IRC";
 const DEFAULT_THREAD_EXCERPT_LEN: usize = 120;
 const REPLY_TOKEN_TTL: Duration = Duration::from_secs(60 * 60 * 6);
 const THREAD_LIST_LIMIT: usize = 8;
+const CHANNEL_ACTIVITY_WINDOW: Duration = Duration::from_secs(60 * 10);
+const MIN_THREAD_BANNER_SUPPRESSION_MESSAGES: u64 = 2;
+const MAX_THREAD_BANNER_SUPPRESSION_MESSAGES: u64 = 12;
 
 #[derive(Clone, Debug)]
 struct ReplyTokenEntry {
@@ -52,7 +55,8 @@ pub(crate) enum ThreadFallbackStyle {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ThreadContextRepeat {
     #[default]
-    FirstSeen,
+    #[serde(alias = "first_seen")]
+    Activity,
     Always,
     Never,
 }
@@ -70,6 +74,13 @@ struct PlaintextThreadContext {
     announcement_line: Option<String>,
 }
 
+#[derive(Debug, Default)]
+struct ChannelThreadContextState {
+    recent_activity: VecDeque<Instant>,
+    next_message_index: u64,
+    thread_banners: HashMap<String, u64>,
+}
+
 pub(crate) struct IRC {
     transport_id: usize,
     config: Config,
@@ -83,7 +94,7 @@ pub(crate) struct IRC {
     thread_context_repeat: ThreadContextRepeat,
     thread_excerpt_len: usize,
     show_thread_root_marker: bool,
-    seen_thread_tokens: Arc<Mutex<HashMap<String, HashSet<String>>>>,
+    channel_thread_context: Arc<Mutex<HashMap<String, ChannelThreadContextState>>>,
     reply_tokens: Arc<Mutex<HashMap<(String, String), ReplyTokenEntry>>>,
 }
 
@@ -156,7 +167,7 @@ impl IRC {
                 thread_excerpt_len
             },
             show_thread_root_marker,
-            seen_thread_tokens: Arc::new(Mutex::new(HashMap::new())),
+            channel_thread_context: Arc::new(Mutex::new(HashMap::new())),
             reply_tokens: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -437,7 +448,7 @@ impl IRC {
         }
 
         if let Some(attachments) = attachments {
-            IRC::handle_attachments(client, channel, attachments);
+            self.handle_attachments(client, channel, attachments);
         }
     }
 
@@ -455,7 +466,7 @@ impl IRC {
         }
 
         if let Some(attachment) = attachments {
-            IRC::handle_attachments(client, channel, attachment);
+            self.handle_attachments(client, channel, attachment);
         }
     }
 
@@ -599,11 +610,11 @@ impl IRC {
         }
 
         if let Some(attachment) = attachments {
-            IRC::handle_attachments(client, channel, attachment);
+            self.handle_attachments(client, channel, attachment);
         }
     }
 
-    fn handle_attachments(client: &Client, channel: &str, attachments: Vec<Attachment>) {
+    fn handle_attachments(&self, client: &Client, channel: &str, attachments: Vec<Attachment>) {
         for attachment in attachments {
             let has_text = attachment.text.is_some();
             let has_fallback = attachment.fallback.is_some();
@@ -647,11 +658,13 @@ impl IRC {
                     )
                 };
 
-                if let Err(e) = client.send_privmsg(channel.clone(), message.clone()) {
+                if let Err(e) = client.send_privmsg(channel, message.clone()) {
                     eprintln!(
                         "Failed to send message '{}' channel {}: {:#}",
                         message, channel, e
                     );
+                } else {
+                    self.note_channel_activity(channel);
                 }
 
                 if line_counter > 6 {
@@ -724,15 +737,21 @@ impl IRC {
     ) -> irc::error::Result<()> {
         let tags = self.tags_for_outbound_message(reply_target, irc_message_id);
 
-        if let Some(tags) = tags {
-            return client.send(IrcMessage {
+        let send_result = if let Some(tags) = tags {
+            client.send(IrcMessage {
                 tags: Some(tags),
                 prefix: None,
                 command: Command::PRIVMSG(channel.to_string(), message),
-            });
+            })
+        } else {
+            client.send_privmsg(channel, message)
+        };
+
+        if send_result.is_ok() {
+            self.note_channel_activity(channel);
         }
 
-        client.send_privmsg(channel, message)
+        send_result
     }
 
     fn tags_for_outbound_message(
@@ -936,7 +955,9 @@ impl IRC {
         let emit_expanded = match self.thread_context_repeat {
             ThreadContextRepeat::Always => true,
             ThreadContextRepeat::Never => false,
-            ThreadContextRepeat::FirstSeen => self.mark_thread_token_seen(channel, &thread_token),
+            ThreadContextRepeat::Activity => {
+                self.should_emit_thread_context_banner(channel, &thread_token, thread_ref)
+            }
         };
 
         let inline_prefix =
@@ -952,10 +973,73 @@ impl IRC {
         })
     }
 
-    fn mark_thread_token_seen(&self, channel: &str, token: &str) -> bool {
-        let mut seen = self.seen_thread_tokens.lock().unwrap();
-        let channel_seen = seen.entry(channel.to_string()).or_default();
-        channel_seen.insert(token.to_string())
+    fn should_emit_thread_context_banner(
+        &self,
+        channel: &str,
+        token: &str,
+        thread_ref: &ThreadRef,
+    ) -> bool {
+        if thread_ref.slack_reply_broadcast {
+            self.note_thread_context_banner(channel, token);
+            return true;
+        }
+
+        let mut state = self.channel_thread_context.lock().unwrap();
+        let channel_state = state.entry(channel.to_string()).or_default();
+        IRC::prune_channel_activity(channel_state, Instant::now());
+
+        let should_emit = match channel_state.thread_banners.get(token).copied() {
+            None => true,
+            Some(last_emitted_at) => {
+                let suppression = IRC::thread_banner_suppression_interval(channel_state);
+                channel_state
+                    .next_message_index
+                    .saturating_sub(last_emitted_at)
+                    >= suppression
+            }
+        };
+
+        if should_emit {
+            let current_index = channel_state.next_message_index;
+            channel_state
+                .thread_banners
+                .insert(token.to_string(), current_index);
+        }
+
+        should_emit
+    }
+
+    fn note_thread_context_banner(&self, channel: &str, token: &str) {
+        let mut state = self.channel_thread_context.lock().unwrap();
+        let channel_state = state.entry(channel.to_string()).or_default();
+        channel_state
+            .thread_banners
+            .insert(token.to_string(), channel_state.next_message_index);
+    }
+
+    fn note_channel_activity(&self, channel: &str) {
+        let mut state = self.channel_thread_context.lock().unwrap();
+        let channel_state = state.entry(channel.to_string()).or_default();
+        let now = Instant::now();
+        IRC::prune_channel_activity(channel_state, now);
+        channel_state.recent_activity.push_back(now);
+        channel_state.next_message_index = channel_state.next_message_index.saturating_add(1);
+    }
+
+    fn prune_channel_activity(channel_state: &mut ChannelThreadContextState, now: Instant) {
+        while let Some(oldest) = channel_state.recent_activity.front().copied() {
+            if now.duration_since(oldest) <= CHANNEL_ACTIVITY_WINDOW {
+                break;
+            }
+            channel_state.recent_activity.pop_front();
+        }
+    }
+
+    fn thread_banner_suppression_interval(channel_state: &ChannelThreadContextState) -> u64 {
+        let recent_messages = channel_state.recent_activity.len() as u64;
+        recent_messages
+            .max(MIN_THREAD_BANNER_SUPPRESSION_MESSAGES)
+            .min(MAX_THREAD_BANNER_SUPPRESSION_MESSAGES)
     }
 
     fn remember_reply_token(
@@ -1263,6 +1347,8 @@ impl IRC {
             return Ok(());
         }
 
+        self.note_channel_activity(&channel);
+
         if let Some(sender) = self.channels.get(&channel) {
             lazy_static! {
                 static ref RE: Regex = Regex::new("^\x01ACTION (.*)\x01\r?$").unwrap();
@@ -1504,6 +1590,8 @@ impl IRC {
         message: String,
         irc_message_id: Option<String>,
     ) -> anyhow::Result<()> {
+        self.note_channel_activity(&channel);
+
         if let Some(sender) = self.channels.get(&channel) {
             lazy_static! {
                 static ref RE: Regex = Regex::new("^\x01ACTION (.*)\x01\r?$").unwrap();

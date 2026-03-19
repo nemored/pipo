@@ -96,6 +96,7 @@ pub(crate) struct ThreadRef {
     reply_target_id: Option<u64>,
     root_author: Option<String>,
     root_excerpt: Option<String>,
+    slack_reply_broadcast: bool,
 }
 
 #[derive(Clone, Debug, Default)]
