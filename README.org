@@ -34,3 +34,32 @@ cargo run
 - CI clean-regeneration drift checks run on the checked-out commit and only fail when build steps mutate tracked files unexpectedly (not because the PR contains committed changes).
 - CI uses lockfile-locked cargo invocations (e.g. =cargo build --locked=) to avoid dependency-resolution drift between environments.
 - CI is expected to pass with protobuf runtime =\>= 3.7.2=.
+
+
+** IRC threading presentation tuning
+For IRC transports, threaded message presentation can be tuned per transport entry:
+- =thread_presentation_mode=: controls how thread context is represented.
+  - =auto= (default): use IRCv3 =+draft/reply= when available, otherwise emit plaintext fallback context.
+  - =ircv3_only=: only emit IRCv3 reply tags; no plaintext fallback when tags are unavailable.
+  - =plaintext_only=: always emit plaintext context and never emit IRCv3 reply tags.
+- =thread_fallback_style= (default =compact=): controls plaintext fallback formatting for replies.
+  - =compact=: emit tokenized reply prefixes such as =↪ [t:K7F2] alice=.
+  - =verbose=: always include the excerpt in fallback, e.g. =↪ [t:K7F2] alice: original root excerpt...=.
+- =thread_context_repeat= (default =first_seen=): controls when expanded context lines are repeated per channel.
+  - =first_seen=: emit one expanded context line for a token the first time it appears in a channel; later replies use compact token prefixes.
+  - =always=: always emit expanded context lines.
+  - =never=: never emit expanded context lines; always use compact token prefixes.
+- =thread_excerpt_len= (default =120=): max character count used for plaintext thread root excerpts.
+- =show_thread_root_marker= (default =true=): when plaintext mode is used for the root post itself, include the =[thread]= marker.
+
+Migration behavior:
+- Existing configs continue to work without changes.
+- If new fields are omitted, defaults are applied (=thread_fallback_style= → =compact=, =thread_context_repeat= → =first_seen=).
+- =first_seen= gives one richer intro line per thread token/channel, then shifts to concise token-only context to reduce noise.
+- Set =verbose +=always= to approximate the prior always-expanded fallback behavior.
+
+IRC user commands for thread replies:
+- =/threads=: shows a bounded list of recent active thread tokens for the current channel (latest 8), with short root summaries.
+- =/threadhelp= (and =/help=): shows reply syntax examples.
+- Reply syntax: =>>TOKEN message= or =/reply TOKEN message=.
+- First-seen fallback context in =first_seen= mode includes a one-time hint like =reply with: >>K7F2 <message>=.

@@ -20,7 +20,7 @@ mod rachni;
 pub mod slack;
 
 use crate::discord::Discord;
-use crate::irc::IRC;
+use crate::irc::{IRC, ThreadContextRepeat, ThreadFallbackStyle, ThreadPresentationMode};
 use crate::mumble::Mumble;
 use crate::rachni::Rachni;
 use crate::slack::Slack;
@@ -35,7 +35,7 @@ enum Message {
         transport: String,
         username: String,
         avatar_url: Option<String>,
-        thread: Option<(Option<String>, Option<u64>)>,
+        thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
         is_edit: bool,
@@ -73,7 +73,7 @@ enum Message {
         remove: bool,
         username: Option<String>,
         avatar_url: Option<String>,
-        thread: Option<(Option<String>, Option<u64>)>,
+        thread: Option<ThreadRef>,
     },
     Text {
         sender: usize,
@@ -81,12 +81,21 @@ enum Message {
         transport: String,
         username: String,
         avatar_url: Option<String>,
-        thread: Option<(Option<String>, Option<u64>)>,
+        thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
         is_edit: bool,
         irc_flag: bool,
     },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ThreadRef {
+    origin_transport: String,
+    thread_root_id: Option<String>,
+    reply_target_id: Option<u64>,
+    root_author: Option<String>,
+    root_excerpt: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -205,6 +214,16 @@ enum ConfigTransport {
         use_tls: bool,
         img_root: Arc<String>,
         channel_mapping: HashMap<Arc<String>, Arc<String>>,
+        #[serde(default)]
+        thread_presentation_mode: ThreadPresentationMode,
+        #[serde(default)]
+        thread_fallback_style: ThreadFallbackStyle,
+        #[serde(default)]
+        thread_context_repeat: ThreadContextRepeat,
+        #[serde(default = "default_thread_excerpt_len")]
+        thread_excerpt_len: usize,
+        #[serde(default = "default_show_thread_root_marker")]
+        show_thread_root_marker: bool,
     },
     Discord {
         token: Arc<String>,
@@ -249,6 +268,14 @@ struct ParsedConfig {
     transports: Vec<ConfigTransport>,
 }
 
+fn default_thread_excerpt_len() -> usize {
+    120
+}
+
+fn default_show_thread_root_marker() -> bool {
+    true
+}
+
 pub async fn inner_main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
     let config_path = args.get(1).cloned().or(env::var("CONFIG_PATH").ok());
@@ -291,6 +318,7 @@ pub async fn inner_main() -> anyhow::Result<()> {
                                            id        INTEGER PRIMARY KEY,
                                            slackid   TEXT,
                                            discordid INTEGER,
+                                           ircid     TEXT,
                                            modtime   DEFAULT 
                                              (strftime('%Y-%m-%d %H:%M:%S:%s',
                                                        'now', 
@@ -344,6 +372,15 @@ pub async fn inner_main() -> anyhow::Result<()> {
                                    channel_name      TEXT
                                );",
                 )?;
+
+                let ircid_exists = conn
+                    .prepare("PRAGMA table_info(messages)")?
+                    .query_map([], |row| row.get::<usize, String>(1))?
+                    .filter_map(Result::ok)
+                    .any(|column| column == "ircid");
+                if !ircid_exists {
+                    conn.execute("ALTER TABLE messages ADD COLUMN ircid TEXT", [])?;
+                }
 
                 Ok(
                     match conn.query_row(
@@ -414,6 +451,11 @@ pub async fn inner_main() -> anyhow::Result<()> {
                 use_tls,
                 img_root,
                 channel_mapping,
+                thread_presentation_mode,
+                thread_fallback_style,
+                thread_context_repeat,
+                thread_excerpt_len,
+                show_thread_root_marker,
             } => {
                 // tokio::spawn maybe?
                 let mut instance = IRC::new(
@@ -425,6 +467,11 @@ pub async fn inner_main() -> anyhow::Result<()> {
                     *use_tls,
                     &img_root,
                     &channel_mapping,
+                    *thread_presentation_mode,
+                    *thread_fallback_style,
+                    *thread_context_repeat,
+                    *thread_excerpt_len,
+                    *show_thread_root_marker,
                     transport_id,
                 )
                 .await?;
