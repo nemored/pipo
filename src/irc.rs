@@ -939,8 +939,12 @@ impl IRC {
                 IRC::sanitize_thread_context_text(thread_ref.root_author.as_deref())
                     .filter(|author| !author.is_empty())
             })?;
+        let thread_token = IRC::thread_token(thread_ref);
 
-        Some(format!("replied to a thread: {}", thread_name))
+        Some(format!(
+            "started a new thread: {} (reply: >>{})",
+            thread_name, thread_token
+        ))
     }
 
     fn outbound_thread_fallback_prefix(
