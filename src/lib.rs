@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
+use deadpool_sqlite::Pool;
 use deadpool_sqlite::{Config, Runtime};
 use regex::bytes::Regex;
 use rusqlite::Error::QueryReturnedNoRows;
@@ -69,6 +70,91 @@ impl RemoteActor {
     fn avatar_url(&self) -> Option<&str> {
         self.avatar_url.as_deref()
     }
+}
+
+pub(crate) async fn upsert_remote_actor(pool: &Pool, actor: &RemoteActor) -> anyhow::Result<i64> {
+    let transport = actor.transport().to_string();
+    let remote_user_id = actor.remote_id().to_string();
+    let display_name = actor.display_name().to_string();
+    let avatar_url = actor.avatar_url().map(ToOwned::to_owned);
+    let conn = pool.get().await?;
+    conn.interact(move |conn| -> anyhow::Result<i64> {
+        conn.execute(
+            "INSERT INTO remote_actors (transport, remote_user_id, latest_display_name, latest_avatar_url)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(transport, remote_user_id) DO UPDATE SET
+               latest_display_name = excluded.latest_display_name,
+               latest_avatar_url = excluded.latest_avatar_url,
+               updated_at = CURRENT_TIMESTAMP",
+            rusqlite::params![transport.clone(), remote_user_id.clone(), display_name, avatar_url],
+        )?;
+        Ok(conn.query_row(
+            "SELECT id FROM remote_actors WHERE transport = ?1 AND remote_user_id = ?2",
+            rusqlite::params![transport, remote_user_id],
+            |row| row.get(0),
+        )?)
+    })
+    .await
+    .unwrap_or_else(|_| Err(anyhow!("Interact Error")))
+}
+
+pub(crate) async fn upsert_irc_presence(
+    pool: &Pool,
+    actor: &RemoteActor,
+    preferred_nick: Option<&str>,
+    last_successful_nick: Option<&str>,
+    collision_suffix: i64,
+    mark_active: bool,
+) -> anyhow::Result<()> {
+    let actor_id = upsert_remote_actor(pool, actor).await?;
+    let preferred_nick = preferred_nick.map(ToOwned::to_owned);
+    let last_successful_nick = last_successful_nick.map(ToOwned::to_owned);
+    let conn = pool.get().await?;
+    conn.interact(move |conn| -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO irc_presences (remote_actor_id, preferred_nick, last_successful_nick, collision_suffix, last_seen_at, last_active_at)
+             VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP, CASE WHEN ?5 THEN CURRENT_TIMESTAMP ELSE NULL END)
+             ON CONFLICT(remote_actor_id) DO UPDATE SET
+               preferred_nick = COALESCE(excluded.preferred_nick, irc_presences.preferred_nick),
+               last_successful_nick = COALESCE(excluded.last_successful_nick, irc_presences.last_successful_nick),
+               collision_suffix = excluded.collision_suffix,
+               last_seen_at = CURRENT_TIMESTAMP,
+               last_active_at = CASE WHEN ?5 THEN CURRENT_TIMESTAMP ELSE irc_presences.last_active_at END,
+               updated_at = CURRENT_TIMESTAMP",
+            rusqlite::params![actor_id, preferred_nick, last_successful_nick, collision_suffix, mark_active],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap_or_else(|_| Err(anyhow!("Interact Error")))
+}
+
+pub(crate) async fn load_irc_presence(
+    pool: &Pool,
+    actor: &RemoteActor,
+) -> anyhow::Result<Option<(Option<String>, Option<String>, i64)>> {
+    let transport = actor.transport().to_string();
+    let remote_user_id = actor.remote_id().to_string();
+    let conn = pool.get().await?;
+    conn.interact(
+        move |conn| -> anyhow::Result<Option<(Option<String>, Option<String>, i64)>> {
+            let mut stmt = conn.prepare(
+                "SELECT p.preferred_nick, p.last_successful_nick, p.collision_suffix
+             FROM irc_presences p
+             JOIN remote_actors a ON a.id = p.remote_actor_id
+             WHERE a.transport = ?1 AND a.remote_user_id = ?2",
+            )?;
+            let mut rows =
+                stmt.query(rusqlite::params![transport.clone(), remote_user_id.clone()])?;
+            if let Some(row) = rows.next()? {
+                Ok(Some((row.get(0)?, row.get(1)?, row.get(2)?)))
+            } else {
+                Ok(None)
+            }
+        },
+    )
+    .await
+    .unwrap_or_else(|_| Err(anyhow!("Interact Error")))
 }
 
 #[derive(Clone, Debug)]
@@ -351,7 +437,44 @@ pub async fn inner_main() -> anyhow::Result<()> {
                                                        'now', 
                                                        'localtime'))
                                            );
-                                        CREATE TRIGGER updatemodtime
+                             CREATE TABLE identity_groups (
+                                           id INTEGER PRIMARY KEY,
+                                           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                           );
+                             CREATE TABLE remote_actors (
+                                           id INTEGER PRIMARY KEY,
+                                           transport TEXT NOT NULL,
+                                           remote_user_id TEXT NOT NULL,
+                                           latest_display_name TEXT NOT NULL,
+                                           latest_avatar_url TEXT,
+                                           identity_group_id INTEGER,
+                                           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                           UNIQUE(transport, remote_user_id),
+                                           FOREIGN KEY(identity_group_id) REFERENCES identity_groups(id)
+                                           );
+                             CREATE TABLE linked_identities (
+                                           id INTEGER PRIMARY KEY,
+                                           identity_group_id INTEGER NOT NULL,
+                                           remote_actor_id INTEGER NOT NULL,
+                                           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                           UNIQUE(identity_group_id, remote_actor_id),
+                                           FOREIGN KEY(identity_group_id) REFERENCES identity_groups(id),
+                                           FOREIGN KEY(remote_actor_id) REFERENCES remote_actors(id)
+                                           );
+                             CREATE TABLE irc_presences (
+                                           remote_actor_id INTEGER PRIMARY KEY,
+                                           preferred_nick TEXT,
+                                           last_successful_nick TEXT,
+                                           collision_suffix INTEGER NOT NULL DEFAULT 0,
+                                           last_seen_at TEXT,
+                                           last_active_at TEXT,
+                                           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                           FOREIGN KEY(remote_actor_id) REFERENCES remote_actors(id)
+                                           );
+                             CREATE TRIGGER updatemodtime
                                         BEFORE update ON messages
                                         begin
                                         update messages set modtime 
@@ -373,6 +496,46 @@ pub async fn inner_main() -> anyhow::Result<()> {
                 if !ircid_exists {
                     conn.execute("ALTER TABLE messages ADD COLUMN ircid TEXT", [])?;
                 }
+
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS identity_groups (
+                         id INTEGER PRIMARY KEY,
+                         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                     );
+                     CREATE TABLE IF NOT EXISTS remote_actors (
+                         id INTEGER PRIMARY KEY,
+                         transport TEXT NOT NULL,
+                         remote_user_id TEXT NOT NULL,
+                         latest_display_name TEXT NOT NULL,
+                         latest_avatar_url TEXT,
+                         identity_group_id INTEGER,
+                         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                         UNIQUE(transport, remote_user_id),
+                         FOREIGN KEY(identity_group_id) REFERENCES identity_groups(id)
+                     );
+                     CREATE TABLE IF NOT EXISTS linked_identities (
+                         id INTEGER PRIMARY KEY,
+                         identity_group_id INTEGER NOT NULL,
+                         remote_actor_id INTEGER NOT NULL,
+                         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                         UNIQUE(identity_group_id, remote_actor_id),
+                         FOREIGN KEY(identity_group_id) REFERENCES identity_groups(id),
+                         FOREIGN KEY(remote_actor_id) REFERENCES remote_actors(id)
+                     );
+                     CREATE TABLE IF NOT EXISTS irc_presences (
+                         remote_actor_id INTEGER PRIMARY KEY,
+                         preferred_nick TEXT,
+                         last_successful_nick TEXT,
+                         collision_suffix INTEGER NOT NULL DEFAULT 0,
+                         last_seen_at TEXT,
+                         last_active_at TEXT,
+                         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                         FOREIGN KEY(remote_actor_id) REFERENCES remote_actors(id)
+                     );",
+                )?;
 
                 Ok(
                     match conn.query_row(

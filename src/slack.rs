@@ -23,7 +23,7 @@ use tokio::{net::TcpStream, sync::broadcast};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt, StreamMap};
 use tokio_tungstenite::*;
 
-use crate::{Message, RemoteActor, ThreadRef};
+use crate::{upsert_remote_actor, Message, RemoteActor, ThreadRef};
 
 pub mod objects;
 use objects::{Message as SlackMessage, *};
@@ -1727,10 +1727,14 @@ impl Slack {
             .id
             .clone()
             .ok_or_else(|| anyhow!("No user ID in user info response."))?;
+        let actor = RemoteActor::new(TRANSPORT_NAME, user_id, username, avatar_url);
+        if let Err(e) = upsert_remote_actor(&self.pool, &actor).await {
+            eprintln!("Failed to upsert Slack actor: {}", e);
+        }
         let message = Message::Action {
             sender: self.transport_id,
             pipo_id,
-            actor: RemoteActor::new(TRANSPORT_NAME, user_id, username, avatar_url),
+            actor,
             thread: None,
             message: message,
             attachments: None,
@@ -2047,10 +2051,14 @@ impl Slack {
                 },
             );
 
+            let actor = RemoteActor::new(TRANSPORT_NAME, user_id, username, avatar_url);
+            if let Err(e) = upsert_remote_actor(&self.pool, &actor).await {
+                eprintln!("Failed to upsert Slack actor: {}", e);
+            }
             let message = Message::Text {
                 pipo_id,
                 sender: self.transport_id,
-                actor: RemoteActor::new(TRANSPORT_NAME, user_id, username, avatar_url),
+                actor,
                 thread,
                 message: message,
                 attachments,
