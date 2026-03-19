@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    env, fmt, os,
+    env, fmt,
     sync::{Arc, Mutex},
 };
 
@@ -20,21 +20,61 @@ mod rachni;
 pub mod slack;
 
 use crate::discord::Discord;
-use crate::irc::{IRC, ThreadContextRepeat, ThreadFallbackStyle, ThreadPresentationMode};
+use crate::irc::{ThreadContextRepeat, ThreadFallbackStyle, ThreadPresentationMode, IRC};
 use crate::mumble::Mumble;
 use crate::rachni::Rachni;
 use crate::slack::Slack;
 
 pub use crate::slack::objects;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemoteActor {
+    transport: String,
+    remote_id: String,
+    display_name: String,
+    avatar_url: Option<String>,
+    presence_identity_key: Option<String>,
+}
+
+impl RemoteActor {
+    fn new(
+        transport: impl Into<String>,
+        remote_id: impl Into<String>,
+        display_name: impl Into<String>,
+        avatar_url: Option<String>,
+    ) -> Self {
+        Self {
+            transport: transport.into(),
+            remote_id: remote_id.into(),
+            display_name: display_name.into(),
+            avatar_url,
+            presence_identity_key: None,
+        }
+    }
+
+    fn transport(&self) -> &str {
+        &self.transport
+    }
+
+    fn remote_id(&self) -> &str {
+        &self.remote_id
+    }
+
+    fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    fn avatar_url(&self) -> Option<&str> {
+        self.avatar_url.as_deref()
+    }
+}
+
 #[derive(Clone, Debug)]
 enum Message {
     Action {
         sender: usize,
         pipo_id: i64,
-        transport: String,
-        username: String,
-        avatar_url: Option<String>,
+        actor: RemoteActor,
         thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
@@ -56,8 +96,7 @@ enum Message {
     },
     Names {
         sender: usize,
-        transport: String,
-        username: String,
+        actor: RemoteActor,
         message: Option<String>,
     },
     Pin {
@@ -68,19 +107,15 @@ enum Message {
     Reaction {
         sender: usize,
         pipo_id: i64,
-        transport: String,
+        actor: RemoteActor,
         emoji: String,
         remove: bool,
-        username: Option<String>,
-        avatar_url: Option<String>,
         thread: Option<ThreadRef>,
     },
     Text {
         sender: usize,
         pipo_id: i64,
-        transport: String,
-        username: String,
-        avatar_url: Option<String>,
+        actor: RemoteActor,
         thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
@@ -129,9 +164,7 @@ impl fmt::Display for Message {
             Message::Action {
                 sender: _,
                 pipo_id: _,
-                transport: _,
-                username: _,
-                avatar_url: _,
+                actor: _,
                 thread: _,
                 message,
                 attachments: _,
@@ -159,8 +192,7 @@ impl fmt::Display for Message {
             } => write!(f, "Delete message"),
             Message::Names {
                 sender: _,
-                transport: _,
-                username: _,
+                actor: _,
                 message,
             } => match message {
                 Some(message) => write!(f, "{}", message),
@@ -174,19 +206,15 @@ impl fmt::Display for Message {
             Message::Reaction {
                 sender: _,
                 pipo_id: _,
-                transport: _,
+                actor: _,
                 emoji,
                 remove: _,
-                username: _,
-                avatar_url: _,
                 thread: _,
             } => write!(f, ":{}:", emoji),
             Message::Text {
                 sender: _,
                 pipo_id: _,
-                transport: _,
-                username: _,
-                avatar_url: _,
+                actor: _,
                 thread: _,
                 message,
                 attachments: _,

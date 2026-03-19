@@ -23,7 +23,7 @@ use tokio::{net::TcpStream, sync::broadcast};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt, StreamMap};
 use tokio_tungstenite::*;
 
-use crate::{Message, ThreadRef};
+use crate::{Message, RemoteActor, ThreadRef};
 
 pub mod objects;
 use objects::{Message as SlackMessage, *};
@@ -154,9 +154,7 @@ impl Slack {
                     Message::Action {
                     sender,
                     pipo_id,
-                    transport,
-                    username,
-                    avatar_url,
+                    actor,
                     thread,
                     message,
                     attachments,
@@ -167,9 +165,7 @@ impl Slack {
                         if let Err(e)
                         = self.post_action_message(pipo_id,
                                        &channel,
-                                       transport,
-                                       username,
-                                       avatar_url,
+                                       actor,
                                        thread,
                                        message,
                                        attachments,
@@ -217,15 +213,13 @@ impl Slack {
                     },
                     Message::Names {
                     sender,
-                    transport,
-                    username,
+                    actor,
                     message,
                     } => {
                     if sender != self.transport_id {
                         if let Err(e)
                         = self.post_names_message(&channel,
-                                      transport,
-                                      username,
+                                      actor,
                                       message)
                         .await {
                             eprintln!("Failed to post message:\
@@ -258,21 +252,17 @@ impl Slack {
                     Message::Reaction {
                     sender,
                     pipo_id,
-                    transport,
+                    actor,
                     emoji,
                     remove,
-                    username,
-                    avatar_url,
                     thread
                     } => if sender != self.transport_id {
                     if !remove {
                         if let Err(e)
                         = self.add_reaction(pipo_id,
                                     &channel,
-                                    transport,
+                                    actor,
                                     emoji,
-                                    username,
-                                    avatar_url,
                                     thread).await {
                             eprintln!("Failed to add \
                                    reaction: {}", e)
@@ -282,10 +272,8 @@ impl Slack {
                         if let Err(e)
                         = self.remove_reaction(pipo_id,
                                        &channel,
-                                       transport,
+                                       actor,
                                        emoji,
-                                       username,
-                                       avatar_url,
                                        thread)
                         .await {
                             eprintln!("Failed to remove \
@@ -296,9 +284,7 @@ impl Slack {
                     Message::Text {
                     sender,
                     pipo_id,
-                    transport,
-                    username,
-                    avatar_url,
+                    actor,
                     thread,
                     message,
                     attachments,
@@ -309,9 +295,7 @@ impl Slack {
                         if let Err(e)
                         = self.post_text_message(pipo_id,
                                      &channel,
-                                     transport,
-                                     username,
-                                     avatar_url,
+                                     actor,
                                      thread,
                                      message,
                                      attachments,
@@ -434,10 +418,8 @@ impl Slack {
         &mut self,
         pipo_id: i64,
         channel: &str,
-        _transport: String,
+        _actor: RemoteActor,
         emoji: String,
-        _username: Option<String>,
-        _avatar_url: Option<String>,
         _thread: Option<ThreadRef>,
     ) -> anyhow::Result<()> {
         let mut headers = HeaderMap::new();
@@ -624,9 +606,7 @@ impl Slack {
         &mut self,
         pipo_id: i64,
         channel: &str,
-        transport: String,
-        username: String,
-        avatar_url: Option<String>,
+        actor: RemoteActor,
         thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<crate::Attachment>>,
@@ -640,31 +620,12 @@ impl Slack {
 
         if is_edit {
             if let Some(ts) = self.select_slackid_from_messages(pipo_id).await? {
-                return self
-                    .update(
-                        ts,
-                        channel,
-                        transport,
-                        username,
-                        avatar_url,
-                        message,
-                        attachments,
-                    )
-                    .await;
+                return self.update(ts, channel, actor, message, attachments).await;
             }
         }
 
         return self
-            .post_message(
-                pipo_id,
-                channel,
-                transport,
-                username,
-                avatar_url,
-                thread_ts,
-                message,
-                attachments,
-            )
+            .post_message(pipo_id, channel, actor, thread_ts, message, attachments)
             .await;
     }
 
@@ -684,8 +645,7 @@ impl Slack {
     async fn post_names_message(
         &mut self,
         channel: &str,
-        transport: String,
-        username: String,
+        actor: RemoteActor,
         message: Option<String>,
     ) -> anyhow::Result<()> {
         let message = message.unwrap();
@@ -693,8 +653,7 @@ impl Slack {
             let users: Vec<String> = self.users.iter().map(|(user, _)| user.clone()).collect();
             let message = Message::Names {
                 sender: self.transport_id,
-                transport: TRANSPORT_NAME.to_string(),
-                username: username,
+                actor,
                 message: Some(serde_json::json!(users).to_string()),
             };
 
@@ -712,14 +671,15 @@ impl Slack {
         } else {
             let mut headers = HeaderMap::new();
             let json: Value = serde_json::from_str(&message)?;
-            let username = match self.users.get(&username) {
+            let user_id = actor.remote_id();
+            let username = match self.users.get(user_id) {
                 Some(user) => match &user.id {
                     Some(s) => s,
                     None => {
                         return Err(anyhow!(
                             "Couldn't find user id for \
                         user: {}",
-                            username
+                            user_id
                         ))
                     }
                 },
@@ -727,7 +687,7 @@ impl Slack {
                     return Err(anyhow!(
                         "Couldn't find user {} in local \
                         cache",
-                        username
+                        user_id
                     ))
                 }
             };
@@ -764,7 +724,7 @@ impl Slack {
                     Element::RichTextSection {
                         elements: vec![
                             Element::Text {
-                                text: transport,
+                                text: actor.transport().to_string(),
                                 style: Some(Style {
                                     bold: Some(true),
                                     code: None,
@@ -808,9 +768,7 @@ impl Slack {
         &mut self,
         pipo_id: i64,
         channel: &str,
-        transport: String,
-        username: String,
-        avatar_url: Option<String>,
+        actor: RemoteActor,
         thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<crate::Attachment>>,
@@ -826,31 +784,12 @@ impl Slack {
 
         if is_edit {
             if let Some(ts) = self.select_slackid_from_messages(pipo_id).await? {
-                return self
-                    .update(
-                        ts,
-                        channel,
-                        transport,
-                        username,
-                        avatar_url,
-                        message,
-                        attachments,
-                    )
-                    .await;
+                return self.update(ts, channel, actor, message, attachments).await;
             }
         }
 
         return self
-            .post_message(
-                pipo_id,
-                channel,
-                transport,
-                username,
-                avatar_url,
-                thread_ts,
-                message,
-                attachments,
-            )
+            .post_message(pipo_id, channel, actor, thread_ts, message, attachments)
             .await;
     }
 
@@ -858,9 +797,7 @@ impl Slack {
         &mut self,
         pipo_id: i64,
         channel: &str,
-        transport: String,
-        username: String,
-        avatar_url: Option<String>,
+        actor: RemoteActor,
         thread_ts: Option<String>,
         message: Option<String>,
         attachments: Option<Vec<crate::Attachment>>,
@@ -871,8 +808,8 @@ impl Slack {
             None => return Err(anyhow!("Could not find id for channel {}", channel)),
         };
         let message = message.map(|s| self.insert_user_names(s));
-        let icon_url = Slack::get_avatar_url(avatar_url);
-        let username = format!("{} ({})", &username, transport);
+        let icon_url = Slack::get_avatar_url(actor.avatar_url().map(ToOwned::to_owned));
+        let username = format!("{} ({})", actor.display_name(), actor.transport());
         let attachments = match attachments {
             Some(a) => Some(self.prepare_attachments_for_slack(&channel, a).await),
             None => None,
@@ -927,10 +864,8 @@ impl Slack {
         &mut self,
         pipo_id: i64,
         channel: &str,
-        _transport: String,
+        _actor: RemoteActor,
         emoji: String,
-        _username: Option<String>,
-        _avatar_url: Option<String>,
         _thread: Option<ThreadRef>,
     ) -> anyhow::Result<()> {
         let mut headers = HeaderMap::new();
@@ -980,9 +915,7 @@ impl Slack {
         &mut self,
         ts: String,
         channel: &str,
-        transport: String,
-        username: String,
-        avatar_url: Option<String>,
+        actor: RemoteActor,
         message: Option<String>,
         _attachments: Option<Vec<crate::Attachment>>,
     ) -> anyhow::Result<()> {
@@ -992,8 +925,8 @@ impl Slack {
             None => return Err(anyhow!("Could not find id for channel {}", channel)),
         };
         let message = message.map(|s| self.insert_user_names(s));
-        let icon_url = Slack::get_avatar_url(avatar_url);
-        let username = format!("{} ({})", &username, transport);
+        let icon_url = Slack::get_avatar_url(actor.avatar_url().map(ToOwned::to_owned));
+        let username = format!("{} ({})", actor.display_name(), actor.transport());
         let body = serde_json::json!({
         "channel":channel,
         "ts":ts,
@@ -1310,8 +1243,12 @@ impl Slack {
                 if accepts_response {
                     let message = Message::Names {
                         sender: self.transport_id,
-                        transport: TRANSPORT_NAME.to_string(),
-                        username: payload.user_name,
+                        actor: RemoteActor::new(
+                            TRANSPORT_NAME,
+                            payload.user_id,
+                            payload.user_name,
+                            None,
+                        ),
                         message: Some("/names".to_string()),
                     };
                     let channel = &format!("#{}", payload.channel_name);
@@ -1786,12 +1723,14 @@ impl Slack {
             .await?;
         let username = Slack::get_username(&user)?;
         let avatar_url = Slack::get_avatar_url_for_user(&user)?;
+        let user_id = user
+            .id
+            .clone()
+            .ok_or_else(|| anyhow!("No user ID in user info response."))?;
         let message = Message::Action {
             sender: self.transport_id,
             pipo_id,
-            transport: TRANSPORT_NAME.to_string(),
-            username,
-            avatar_url,
+            actor: RemoteActor::new(TRANSPORT_NAME, user_id, username, avatar_url),
             thread: None,
             message: message,
             attachments: None,
@@ -2090,6 +2029,10 @@ impl Slack {
             )
             .await?;
         let avatar_url = Slack::get_avatar_url_for_user(&user)?;
+        let user_id = user
+            .id
+            .clone()
+            .ok_or_else(|| anyhow!("No user ID in user info response."))?;
         let attachments = match attachments {
             Some(attachments) => Some(self.handle_attachments(attachments).await),
             None => None,
@@ -2107,9 +2050,7 @@ impl Slack {
             let message = Message::Text {
                 pipo_id,
                 sender: self.transport_id,
-                transport: TRANSPORT_NAME.to_string(),
-                username,
-                avatar_url,
+                actor: RemoteActor::new(TRANSPORT_NAME, user_id, username, avatar_url),
                 thread,
                 message: message,
                 attachments,
@@ -2255,11 +2196,16 @@ impl Slack {
                 let message = Message::Reaction {
                     sender: self.transport_id,
                     pipo_id,
-                    transport: TRANSPORT_NAME.to_string(),
+                    actor: RemoteActor::new(
+                        TRANSPORT_NAME,
+                        user.clone()
+                            .ok_or_else(|| anyhow!("Reaction event missing user id"))?,
+                        user.clone()
+                            .ok_or_else(|| anyhow!("Reaction event missing user id"))?,
+                        None,
+                    ),
                     emoji: reaction,
                     remove,
-                    username: user,
-                    avatar_url: None,
                     thread: None,
                 };
 

@@ -16,7 +16,7 @@ use serde::Deserialize;
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, StreamMap};
 
-use crate::{Attachment, Message, ThreadRef};
+use crate::{Attachment, Message, RemoteActor, ThreadRef};
 use anyhow::anyhow;
 
 const TRANSPORT_NAME: &'static str = "IRC";
@@ -169,9 +169,7 @@ impl IRC {
                         Message::Action {
                         sender,
                         pipo_id,
-                        transport,
-                        username,
-                        avatar_url: _,
+                        actor,
                         thread,
                         message,
                         attachments,
@@ -182,8 +180,7 @@ impl IRC {
                             self.handle_action_message(&client,
                                            &channel,
                                            pipo_id,
-                                           transport,
-                                           username,
+                                           actor,
                                            thread,
                                            message,
                                            attachments,
@@ -217,15 +214,11 @@ impl IRC {
                         },
                         Message::Names {
                         sender,
-                        transport: _,
-                        username,
+                        actor,
                         message,
                         } => {
                         if sender != self.transport_id {
-                            self.handle_names_message(&client,
-                                          &channel,
-                                          username,
-                                          message);
+                            self.handle_names_message(&client, &channel, actor, message);
                         }
                         },
                         Message::Pin {
@@ -238,11 +231,9 @@ impl IRC {
                         Message::Reaction {
                         sender: _,
                         pipo_id: _,
-                        transport: _,
+                        actor: _,
                         emoji: _,
                         remove: _,
-                        username: _,
-                        avatar_url: _,
                         thread: _,
                         } => {
                         continue
@@ -250,9 +241,7 @@ impl IRC {
                         Message::Text {
                         sender,
                         pipo_id,
-                        transport,
-                        username,
-                        avatar_url: _,
+                        actor,
                         thread,
                         message,
                         attachments,
@@ -263,8 +252,7 @@ impl IRC {
                             self.handle_text_message(&client,
                                          &channel,
                                          pipo_id,
-                                         transport,
-                                         username,
+                                         actor,
                                          thread,
                                          message,
                                          attachments,
@@ -326,8 +314,7 @@ impl IRC {
         client: &Client,
         channel: &str,
         pipo_id: i64,
-        transport: String,
-        username: String,
+        actor: RemoteActor,
         thread: Option<crate::ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
@@ -352,9 +339,8 @@ impl IRC {
 
             if let Some(prefix) = thread_presentation.plaintext_prefix.as_ref() {
                 let prefix_message = format!(
-                    "\x01ACTION \x02* \x02{}!\x02{}\x02 {}\x01",
-                    &transport[..1].to_uppercase(),
-                    username,
+                    "\x01ACTION \x02* \x02{}\x02 {}\x01",
+                    self.irc_nick_from_actor(&actor),
                     prefix
                 );
 
@@ -384,16 +370,14 @@ impl IRC {
                     is_edit = false;
 
                     format!(
-                        "\x01ACTION \x02* \x02{}!\x02{}\x02 {}*\x01",
-                        &transport[..1].to_uppercase(),
-                        username,
+                        "\x01ACTION \x02* \x02{}\x02 {}*\x01",
+                        self.irc_nick_from_actor(&actor),
                         msg
                     )
                 } else {
                     format!(
-                        "\x01ACTION \x02* \x02{}!\x02{}\x02 {}\x01",
-                        &transport[..1].to_uppercase(),
-                        username,
+                        "\x01ACTION \x02* \x02{}\x02 {}\x01",
+                        self.irc_nick_from_actor(&actor),
                         msg
                     )
                 };
@@ -443,7 +427,7 @@ impl IRC {
         &self,
         client: &Client,
         channel: &str,
-        username: String,
+        actor: RemoteActor,
         message: Option<String>,
     ) {
         if message == Some("/names".to_string()) {
@@ -454,8 +438,7 @@ impl IRC {
                     .collect();
                 let message = Message::Names {
                     sender: self.transport_id,
-                    transport: TRANSPORT_NAME.to_string(),
-                    username: username.to_string(),
+                    actor,
                     message: Some(serde_json::json!(users).to_string()),
                 };
 
@@ -474,8 +457,7 @@ impl IRC {
         client: &Client,
         channel: &str,
         pipo_id: i64,
-        transport: String,
-        username: String,
+        actor: RemoteActor,
         thread: Option<crate::ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
@@ -500,9 +482,8 @@ impl IRC {
 
             if let Some(prefix) = thread_presentation.plaintext_prefix.as_ref() {
                 let prefix_message = format!(
-                    "\x01ACTION <{}!\x02{}\x02> {}\x01",
-                    &transport[..1].to_uppercase(),
-                    username,
+                    "\x01ACTION <{}> {}\x01",
+                    self.irc_nick_from_actor(&actor),
                     prefix
                 );
 
@@ -532,16 +513,14 @@ impl IRC {
                     is_edit = false;
 
                     format!(
-                        "\x01ACTION <{}!\x02{}\x02> \x02EDIT:\x02 {}\x01",
-                        &transport[..1].to_uppercase(),
-                        username,
+                        "\x01ACTION <{}> \x02EDIT:\x02 {}\x01",
+                        self.irc_nick_from_actor(&actor),
                         msg
                     )
                 } else {
                     format!(
-                        "\x01ACTION <{}!\x02{}\x02> {}\x01",
-                        &transport[..1].to_uppercase(),
-                        username,
+                        "\x01ACTION <{}> {}\x01",
+                        self.irc_nick_from_actor(&actor),
                         msg
                     )
                 };
@@ -1007,7 +986,11 @@ impl IRC {
                     .into_iter()
                     .take(THREAD_LIST_LIMIT)
                     .map(|(token, entry)| {
-                        format!("{} ({})", token, self.thread_root_summary(&entry.thread_ref))
+                        format!(
+                            "{} ({})",
+                            token,
+                            self.thread_root_summary(&entry.thread_ref)
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join(" | ")
@@ -1157,6 +1140,39 @@ impl IRC {
         format!("{}…", truncated)
     }
 
+    fn irc_nick_from_actor(&self, actor: &RemoteActor) -> String {
+        let transport_prefix = actor
+            .transport()
+            .chars()
+            .next()
+            .map(|c| c.to_ascii_uppercase())
+            .unwrap_or('U');
+        let display = actor
+            .display_name()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .take(20)
+            .collect::<String>();
+        let stable_suffix = actor
+            .remote_id()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .take(8)
+            .collect::<String>();
+        let display = if display.is_empty() {
+            "user"
+        } else {
+            display.as_str()
+        };
+        let stable_suffix = if stable_suffix.is_empty() {
+            "anon"
+        } else {
+            stable_suffix.as_str()
+        };
+
+        format!("{}{}-{}", transport_prefix, display, stable_suffix)
+    }
+
     fn parse_message_id_tag(message: &IrcMessage) -> Option<String> {
         let tags = message.tags.as_ref()?;
 
@@ -1236,9 +1252,12 @@ impl IRC {
                 let message = Message::Action {
                     sender: self.transport_id,
                     pipo_id,
-                    transport: TRANSPORT_NAME.to_string(),
-                    username: nickname.clone(),
-                    avatar_url: Some(avatar_url),
+                    actor: RemoteActor::new(
+                        TRANSPORT_NAME,
+                        nickname.clone(),
+                        nickname.clone(),
+                        Some(avatar_url),
+                    ),
                     thread,
                     message: Some(content),
                     attachments: None,
@@ -1268,9 +1287,12 @@ impl IRC {
                 let message = Message::Text {
                     sender: self.transport_id,
                     pipo_id,
-                    transport: TRANSPORT_NAME.to_string(),
-                    username: nickname.clone(),
-                    avatar_url: Some(avatar_url),
+                    actor: RemoteActor::new(
+                        TRANSPORT_NAME,
+                        nickname.clone(),
+                        nickname.clone(),
+                        Some(avatar_url),
+                    ),
                     thread,
                     message: Some(content),
                     attachments: None,
@@ -1460,9 +1482,12 @@ impl IRC {
                 let message = Message::Action {
                     sender: self.transport_id,
                     pipo_id,
-                    transport: TRANSPORT_NAME.to_string(),
-                    username: nickname.clone(),
-                    avatar_url: Some(avatar_url),
+                    actor: RemoteActor::new(
+                        TRANSPORT_NAME,
+                        nickname.clone(),
+                        nickname.clone(),
+                        Some(avatar_url),
+                    ),
                     thread: None,
                     message: Some(message.to_string()),
                     attachments: None,
@@ -1477,9 +1502,12 @@ impl IRC {
                 let message = Message::Text {
                     sender: self.transport_id,
                     pipo_id,
-                    transport: TRANSPORT_NAME.to_string(),
-                    username: nickname.clone(),
-                    avatar_url: Some(avatar_url),
+                    actor: RemoteActor::new(
+                        TRANSPORT_NAME,
+                        nickname.clone(),
+                        nickname.clone(),
+                        Some(avatar_url),
+                    ),
                     thread: None,
                     message: Some(format!("```{}```", message.to_string())),
                     attachments: None,
