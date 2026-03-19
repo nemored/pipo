@@ -29,7 +29,7 @@ use tokio_rustls::{
 use tokio_stream::{wrappers::BroadcastStream, StreamMap};
 use webpki_roots;
 
-use crate::{Attachment, Message};
+use crate::{Attachment, Message, RemoteActor};
 
 mod cert_verifier;
 mod protocol;
@@ -541,9 +541,12 @@ impl Mumble {
                     let message = Message::Text {
                         sender: self.transport_id,
                         pipo_id,
-                        transport: TRANSPORT_NAME.to_string(),
-                        username,
-                        avatar_url: None,
+                        actor: RemoteActor::new(
+                            TRANSPORT_NAME,
+                            message.actor().to_string(),
+                            username,
+                            None,
+                        ),
                         thread: None,
                         message: Some(
                             html_escape::decode_html_entities(message.message()).to_string(),
@@ -579,8 +582,7 @@ impl Mumble {
         match message {
             Message::Action {
                 sender,
-                transport,
-                username,
+                actor,
                 message,
                 attachments,
                 is_edit,
@@ -589,8 +591,8 @@ impl Mumble {
                 if sender != self.transport_id {
                     self.handle_pipo_action_message(
                         &channel,
-                        &transport,
-                        &username,
+                        actor.transport(),
+                        actor.display_name(),
                         message.as_deref(),
                         attachments,
                         is_edit,
@@ -610,10 +612,9 @@ impl Mumble {
                 Ok(())
             }
             Message::Names {
-                sender,
-                transport: _,
-                username,
-                message,
+                actor: _,
+                message: _,
+                sender: _,
             } => {
                 // TODO
                 Ok(())
@@ -628,8 +629,7 @@ impl Mumble {
             }
             Message::Text {
                 sender,
-                transport,
-                username,
+                actor,
                 message,
                 attachments,
                 is_edit,
@@ -638,8 +638,8 @@ impl Mumble {
                 if sender != self.transport_id {
                     self.handle_pipo_text_message(
                         &channel,
-                        &transport,
-                        &username,
+                        actor.transport(),
+                        actor.display_name(),
                         message.as_deref(),
                         attachments,
                         is_edit,

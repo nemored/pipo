@@ -13,7 +13,7 @@ use tokio::{
     time::{self, Duration},
 };
 
-use crate::Message;
+use crate::{Message, RemoteActor};
 
 const TRANSPORT_NAME: &'static str = "Rachni";
 
@@ -128,9 +128,12 @@ impl Rachni {
         let message = Message::Action {
             sender: self.transport_id,
             pipo_id,
-            transport: TRANSPORT_NAME.to_string(),
-            username: username.to_string(),
-            avatar_url,
+            actor: RemoteActor::new(
+                TRANSPORT_NAME,
+                username.to_string(),
+                username.to_string(),
+                avatar_url,
+            ),
             thread: None,
             message: Some(message.to_string()),
             attachments: None,

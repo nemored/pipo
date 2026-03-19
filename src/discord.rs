@@ -24,7 +24,7 @@ use serenity::{
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt, StreamMap};
 
-use crate::{Message, ThreadRef};
+use crate::{Message, RemoteActor, ThreadRef};
 
 const TRANSPORT_NAME: &'static str = "Discord";
 
@@ -433,9 +433,12 @@ impl RealHandler {
                 Message::Action {
                     sender: self.transport_id,
                     pipo_id,
-                    transport: TRANSPORT_NAME.to_string(),
-                    username: msg.author.name.clone(),
-                    avatar_url: msg.author.avatar_url(),
+                    actor: RemoteActor::new(
+                        TRANSPORT_NAME,
+                        msg.author.id.get().to_string(),
+                        msg.author.name.clone(),
+                        msg.author.avatar_url(),
+                    ),
                     thread,
                     message: Some(content),
                     attachments,
@@ -446,9 +449,12 @@ impl RealHandler {
                 Message::Text {
                     sender: self.transport_id,
                     pipo_id,
-                    transport: TRANSPORT_NAME.to_string(),
-                    username: msg.author.name.clone(),
-                    avatar_url: msg.author.avatar_url(),
+                    actor: RemoteActor::new(
+                        TRANSPORT_NAME,
+                        msg.author.id.get().to_string(),
+                        msg.author.name.clone(),
+                        msg.author.avatar_url(),
+                    ),
                     thread,
                     message: Some(content),
                     attachments,
@@ -593,9 +599,12 @@ impl RealHandler {
                 Message::Action {
                     sender: self.transport_id,
                     pipo_id,
-                    transport: TRANSPORT_NAME.to_string(),
-                    username: author.name.clone(),
-                    avatar_url: author.avatar_url(),
+                    actor: RemoteActor::new(
+                        TRANSPORT_NAME,
+                        author.id.get().to_string(),
+                        author.name.clone(),
+                        author.avatar_url(),
+                    ),
                     thread,
                     message: Some(content),
                     attachments: None,
@@ -606,9 +615,12 @@ impl RealHandler {
                 Message::Text {
                     sender: self.transport_id,
                     pipo_id,
-                    transport: TRANSPORT_NAME.to_string(),
-                    username: author.name.clone(),
-                    avatar_url: author.avatar_url(),
+                    actor: RemoteActor::new(
+                        TRANSPORT_NAME,
+                        author.id.get().to_string(),
+                        author.name.clone(),
+                        author.avatar_url(),
+                    ),
                     thread,
                     message: Some(content),
                     attachments: None,
@@ -674,19 +686,33 @@ impl RealHandler {
                     return;
                 }
             };
-            let mut username = None;
-            let mut avatar_url = None;
-
-            if let Some(m) = reaction.member {
-                if let Some(nick) = m.nick {
-                    username = Some(nick);
-                }
+            let actor = if let Some(m) = reaction.member {
                 let user = m.user;
-                if username.is_none() {
-                    username = Some(user.name.clone())
+                let display_name = m.nick.unwrap_or_else(|| user.name.clone());
+                RemoteActor::new(
+                    TRANSPORT_NAME,
+                    user.id.get().to_string(),
+                    display_name,
+                    user.avatar_url(),
+                )
+            } else {
+                let user_id = match reaction.user_id {
+                    Some(user_id) => user_id,
+                    None => return,
+                };
+                match user_id.to_user(CacheHttp::http(&ctx)).await {
+                    Ok(user) => RemoteActor::new(
+                        TRANSPORT_NAME,
+                        user.id.get().to_string(),
+                        user.name.clone(),
+                        user.avatar_url(),
+                    ),
+                    Err(e) => {
+                        eprintln!("Failed to fetch reaction user: {}", e);
+                        return;
+                    }
                 }
-                avatar_url = user.avatar_url();
-            }
+            };
 
             let emoji = match reaction.emoji {
                 ReactionType::Custom {
@@ -702,11 +728,9 @@ impl RealHandler {
                 let message = Message::Reaction {
                     sender: self.transport_id,
                     pipo_id,
-                    transport: TRANSPORT_NAME.to_string(),
+                    actor,
                     emoji,
                     remove: false,
-                    username,
-                    avatar_url,
                     thread,
                 };
 
@@ -746,19 +770,33 @@ impl RealHandler {
                     return;
                 }
             };
-            let mut username = None;
-            let mut avatar_url = None;
-
-            if let Some(m) = reaction.member {
-                if let Some(nick) = m.nick {
-                    username = Some(nick);
-                }
+            let actor = if let Some(m) = reaction.member {
                 let user = m.user;
-                if username.is_none() {
-                    username = Some(user.name.clone())
+                let display_name = m.nick.unwrap_or_else(|| user.name.clone());
+                RemoteActor::new(
+                    TRANSPORT_NAME,
+                    user.id.get().to_string(),
+                    display_name,
+                    user.avatar_url(),
+                )
+            } else {
+                let user_id = match reaction.user_id {
+                    Some(user_id) => user_id,
+                    None => return,
+                };
+                match user_id.to_user(CacheHttp::http(&ctx)).await {
+                    Ok(user) => RemoteActor::new(
+                        TRANSPORT_NAME,
+                        user.id.get().to_string(),
+                        user.name.clone(),
+                        user.avatar_url(),
+                    ),
+                    Err(e) => {
+                        eprintln!("Failed to fetch reaction user: {}", e);
+                        return;
+                    }
                 }
-                avatar_url = user.avatar_url();
-            }
+            };
 
             let emoji = match reaction.emoji {
                 ReactionType::Custom {
@@ -774,11 +812,9 @@ impl RealHandler {
                 let message = Message::Reaction {
                     sender: self.transport_id,
                     pipo_id,
-                    transport: TRANSPORT_NAME.to_string(),
+                    actor,
                     emoji,
                     remove: true,
-                    username,
-                    avatar_url,
                     thread,
                 };
 
@@ -1634,9 +1670,7 @@ impl Discord {
         &self,
         channel: ChannelId,
         pipo_id: i64,
-        transport: String,
-        username: String,
-        avatar_url: Option<String>,
+        actor: RemoteActor,
         message: Option<String>,
         is_edit: bool,
     ) -> anyhow::Result<()> {
@@ -1676,8 +1710,8 @@ impl Discord {
 
             let mut msg = MessageBuilder::new();
 
-            msg.push_bold(username)
-                .push_line(format!(" [{}]", transport))
+            msg.push_bold(actor.display_name())
+                .push_line(format!(" [{}]", actor.transport()))
                 .push(content.to_string());
 
             channel
@@ -1695,8 +1729,8 @@ impl Discord {
                     eprintln!("Webhook: {:?}", wh);
                     let mut exec = ExecuteWebhook::new()
                         .content(content.to_string())
-                        .username(format!("{} ({})", username.clone(), transport.clone()));
-                    if let Some(url) = avatar_url.clone() {
+                        .username(format!("{} ({})", actor.display_name(), actor.transport()));
+                    if let Some(url) = actor.avatar_url().map(ToOwned::to_owned) {
                         exec = exec.avatar_url(url);
                     }
 
@@ -1709,8 +1743,8 @@ impl Discord {
 
             let mut msg = MessageBuilder::new();
 
-            msg.push_bold(username)
-                .push_line(format!(" [{}]", transport))
+            msg.push_bold(actor.display_name())
+                .push_line(format!(" [{}]", actor.transport()))
                 .push(content.to_string());
 
             self.update_messages_table(pipo_id, channel.say(http, msg.to_string()).await?)
@@ -1794,9 +1828,7 @@ impl Discord {
         &self,
         channel: ChannelId,
         pipo_id: i64,
-        transport: String,
-        username: String,
-        avatar_url: Option<String>,
+        actor: RemoteActor,
         thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<crate::Attachment>>,
@@ -1874,8 +1906,8 @@ impl Discord {
 
             let mut msg = MessageBuilder::new();
 
-            msg.push_bold(username)
-                .push_line(format!(" [{}]", transport))
+            msg.push_bold(actor.display_name())
+                .push_line(format!(" [{}]", actor.transport()))
                 .push(content.to_string());
 
             channel
@@ -1893,8 +1925,8 @@ impl Discord {
                     eprintln!("Webhook: {:?}", wh);
                     let mut exec = ExecuteWebhook::new()
                         .content(content.to_string())
-                        .username(format!("{} ({})", username.clone(), transport.clone()));
-                    if let Some(url) = avatar_url.clone() {
+                        .username(format!("{} ({})", actor.display_name(), actor.transport()));
+                    if let Some(url) = actor.avatar_url().map(ToOwned::to_owned) {
                         exec = exec.avatar_url(url);
                     }
 
@@ -1907,8 +1939,8 @@ impl Discord {
 
             let mut msg = MessageBuilder::new();
 
-            msg.push_bold(username)
-                .push_line(format!(" [{}]", transport))
+            msg.push_bold(actor.display_name())
+                .push_line(format!(" [{}]", actor.transport()))
                 .push(content.to_string());
 
             self.update_messages_table(pipo_id, channel.say(http, msg.to_string()).await?)
@@ -1953,9 +1985,7 @@ impl Discord {
                     Message::Action {
                         sender,
                         pipo_id,
-                        transport,
-                        username,
-                        avatar_url,
+                        actor,
                         thread: _,
                         message,
                         attachments: _,
@@ -1966,9 +1996,7 @@ impl Discord {
                         if let Err(e) = self
                             .handle_action_message(channel_id,
                                        pipo_id,
-                                       transport,
-                                       username,
-                                       avatar_url,
+                                       actor,
                                        message,
                                        is_edit)
                         .await {
@@ -2007,8 +2035,7 @@ impl Discord {
                     },
                     Message::Names {
                         sender: _,
-                        transport: _,
-                        username: _,
+                        actor: _,
                         message: _,
                     } => {
                         continue
@@ -2029,11 +2056,9 @@ impl Discord {
                     Message::Reaction {
                         sender,
                         pipo_id,
-                        transport: _,
+                        actor: _,
                         emoji,
                         remove,
-                        username: _,
-                        avatar_url: _,
                         thread: _,
                     } => {
                         if sender != self.transport_id {
@@ -2053,9 +2078,7 @@ impl Discord {
                     Message::Text {
                         sender,
                         pipo_id,
-                        transport,
-                        username,
-                        avatar_url,
+                        actor,
                         thread,
                         message,
                         attachments,
@@ -2066,9 +2089,7 @@ impl Discord {
                         if let Err(e) = self
                             .handle_text_message(channel_id,
                                      pipo_id,
-                                     transport,
-                                     username,
-                                     avatar_url,
+                                     actor,
                                      thread,
                                      message,
                                      attachments,
