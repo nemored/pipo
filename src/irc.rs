@@ -60,8 +60,14 @@ pub(crate) enum ThreadContextRepeat {
 #[derive(Debug)]
 struct ThreadPresentation {
     reply_target: Option<String>,
-    plaintext_prefix: Option<String>,
+    plaintext_context: Option<PlaintextThreadContext>,
     mode_used: &'static str,
+}
+
+#[derive(Debug)]
+struct PlaintextThreadContext {
+    inline_prefix: Option<String>,
+    announcement_line: Option<String>,
 }
 
 pub(crate) struct IRC {
@@ -350,19 +356,23 @@ impl IRC {
                 self.log_thread_presentation(channel, pipo_id, &thread_presentation);
             }
 
-            if let Some(prefix) = thread_presentation.plaintext_prefix.as_ref() {
-                let prefix_message = format!(
+            if let Some(announcement_line) = thread_presentation
+                .plaintext_context
+                .as_ref()
+                .and_then(|context| context.announcement_line.as_deref())
+            {
+                let announcement_message = format!(
                     "\x01ACTION \x02* \x02{}!\x02{}\x02 {}\x01",
                     &transport[..1].to_uppercase(),
                     username,
-                    prefix
+                    announcement_line
                 );
 
                 if let Err(e) = self
                     .send_privmsg_with_tags(
                         client,
                         channel,
-                        prefix_message.clone(),
+                        announcement_message.clone(),
                         thread_presentation.reply_target.as_deref(),
                         irc_message_id.as_deref(),
                     )
@@ -370,7 +380,7 @@ impl IRC {
                 {
                     eprintln!(
                         "Failed to send message '{}' channel {}: {:#}",
-                        prefix_message, channel, e
+                        announcement_message, channel, e
                     );
                 }
             }
@@ -380,6 +390,16 @@ impl IRC {
                     continue;
                 }
 
+                let rendered_msg = if let Some(prefix) = thread_presentation
+                    .plaintext_context
+                    .as_ref()
+                    .and_then(|context| context.inline_prefix.as_deref())
+                {
+                    format!("{} {}", prefix, msg)
+                } else {
+                    msg.to_string()
+                };
+
                 let message = if is_edit {
                     is_edit = false;
 
@@ -387,14 +407,14 @@ impl IRC {
                         "\x01ACTION \x02* \x02{}!\x02{}\x02 {}*\x01",
                         &transport[..1].to_uppercase(),
                         username,
-                        msg
+                        rendered_msg
                     )
                 } else {
                     format!(
                         "\x01ACTION \x02* \x02{}!\x02{}\x02 {}\x01",
                         &transport[..1].to_uppercase(),
                         username,
-                        msg
+                        rendered_msg
                     )
                 };
 
@@ -498,19 +518,23 @@ impl IRC {
                 self.log_thread_presentation(channel, pipo_id, &thread_presentation);
             }
 
-            if let Some(prefix) = thread_presentation.plaintext_prefix.as_ref() {
-                let prefix_message = format!(
+            if let Some(announcement_line) = thread_presentation
+                .plaintext_context
+                .as_ref()
+                .and_then(|context| context.announcement_line.as_deref())
+            {
+                let announcement_message = format!(
                     "\x01ACTION <{}!\x02{}\x02> {}\x01",
                     &transport[..1].to_uppercase(),
                     username,
-                    prefix
+                    announcement_line
                 );
 
                 if let Err(e) = self
                     .send_privmsg_with_tags(
                         client,
                         channel,
-                        prefix_message.clone(),
+                        announcement_message.clone(),
                         thread_presentation.reply_target.as_deref(),
                         irc_message_id.as_deref(),
                     )
@@ -518,7 +542,7 @@ impl IRC {
                 {
                     eprintln!(
                         "Failed to send message '{}' channel {}: {:#}",
-                        prefix_message, channel, e
+                        announcement_message, channel, e
                     );
                 }
             }
@@ -528,6 +552,16 @@ impl IRC {
                     continue;
                 }
 
+                let rendered_msg = if let Some(prefix) = thread_presentation
+                    .plaintext_context
+                    .as_ref()
+                    .and_then(|context| context.inline_prefix.as_deref())
+                {
+                    format!("{} {}", prefix, msg)
+                } else {
+                    msg.to_string()
+                };
+
                 let message = if is_edit {
                     is_edit = false;
 
@@ -535,14 +569,14 @@ impl IRC {
                         "\x01ACTION <{}!\x02{}\x02> \x02EDIT:\x02 {}\x01",
                         &transport[..1].to_uppercase(),
                         username,
-                        msg
+                        rendered_msg
                     )
                 } else {
                     format!(
                         "\x01ACTION <{}!\x02{}\x02> {}\x01",
                         &transport[..1].to_uppercase(),
                         username,
-                        msg
+                        rendered_msg
                     )
                 };
 
@@ -746,7 +780,7 @@ impl IRC {
         if thread.is_none() {
             return ThreadPresentation {
                 reply_target: None,
-                plaintext_prefix: None,
+                plaintext_context: None,
                 mode_used: "none",
             };
         }
@@ -770,14 +804,14 @@ impl IRC {
                 if reply_target.is_some() {
                     ThreadPresentation {
                         reply_target,
-                        plaintext_prefix: None,
+                        plaintext_context: None,
                         mode_used: "ircv3_tag",
                     }
                 } else {
                     ThreadPresentation {
                         reply_target: None,
-                        plaintext_prefix: self
-                            .outbound_thread_fallback_prefix(channel, pipo_id, thread)
+                        plaintext_context: self
+                            .resolve_plaintext_thread_context(channel, pipo_id, thread)
                             .await,
                         mode_used: "plaintext_fallback",
                     }
@@ -787,21 +821,21 @@ impl IRC {
                 if reply_target.is_some() {
                     ThreadPresentation {
                         reply_target,
-                        plaintext_prefix: None,
+                        plaintext_context: None,
                         mode_used: "ircv3_tag",
                     }
                 } else {
                     ThreadPresentation {
                         reply_target: None,
-                        plaintext_prefix: None,
+                        plaintext_context: None,
                         mode_used: "ircv3_unavailable",
                     }
                 }
             }
             ThreadPresentationMode::PlaintextOnly => ThreadPresentation {
                 reply_target: None,
-                plaintext_prefix: self
-                    .outbound_thread_fallback_prefix(channel, pipo_id, thread)
+                plaintext_context: self
+                    .resolve_plaintext_thread_context(channel, pipo_id, thread)
                     .await,
                 mode_used: "plaintext_fallback",
             },
@@ -846,32 +880,58 @@ impl IRC {
         None
     }
 
-    async fn outbound_thread_fallback_prefix(
+    async fn resolve_plaintext_thread_context(
         &self,
         channel: &str,
         pipo_id: i64,
         thread: &Option<ThreadRef>,
-    ) -> Option<String> {
+    ) -> Option<PlaintextThreadContext> {
         let thread_ref = thread.as_ref()?;
 
-        if self.is_thread_root_message(pipo_id, thread_ref).await {
-            return if self.show_thread_root_marker {
-                Some("[thread]".to_string())
-            } else {
-                None
-            };
+        if self
+            .should_emit_thread_announcement(channel, pipo_id, thread_ref)
+            .await
+        {
+            return self
+                .thread_announcement_line(thread_ref)
+                .map(|announcement_line| PlaintextThreadContext {
+                    inline_prefix: None,
+                    announcement_line: Some(announcement_line),
+                });
         }
 
-        let root_author = IRC::sanitize_thread_context_text(thread_ref.root_author.as_deref())
-            .filter(|author| !author.is_empty())
-            .unwrap_or_else(|| "unknown".to_string());
-        let root_excerpt = IRC::sanitize_thread_context_text(thread_ref.root_excerpt.as_deref())
+        self.outbound_thread_fallback_prefix(channel, thread_ref)
+    }
+
+    async fn should_emit_thread_announcement(
+        &self,
+        _channel: &str,
+        pipo_id: i64,
+        thread_ref: &ThreadRef,
+    ) -> bool {
+        self.show_thread_root_marker && self.is_thread_root_message(pipo_id, thread_ref).await
+    }
+
+    fn thread_announcement_line(&self, thread_ref: &ThreadRef) -> Option<String> {
+        let thread_name = IRC::sanitize_thread_context_text(thread_ref.root_excerpt.as_deref())
             .filter(|excerpt| !excerpt.is_empty())
             .map(|excerpt| IRC::truncate_with_ellipsis(excerpt, self.thread_excerpt_len))
-            .unwrap_or_else(|| "…".to_string());
+            .or_else(|| {
+                IRC::sanitize_thread_context_text(thread_ref.root_author.as_deref())
+                    .filter(|author| !author.is_empty())
+            })?;
+
+        Some(format!("replied to a thread: {}", thread_name))
+    }
+
+    fn outbound_thread_fallback_prefix(
+        &self,
+        channel: &str,
+        thread_ref: &ThreadRef,
+    ) -> Option<PlaintextThreadContext> {
         let thread_token = IRC::thread_token(thread_ref);
-        let compact_prefix = format!("↪ [t:{}] {}", thread_token, root_author);
-        let expanded_prefix = format!("↪ [t:{}] {}: {}", thread_token, root_author, root_excerpt);
+        let compact_prefix = format!(">>{}", thread_token);
+        let verbose_prefix = format!("{}:", compact_prefix);
 
         let emit_expanded = match self.thread_context_repeat {
             ThreadContextRepeat::Always => true,
@@ -879,20 +939,17 @@ impl IRC {
             ThreadContextRepeat::FirstSeen => self.mark_thread_token_seen(channel, &thread_token),
         };
 
-        if emit_expanded {
-            if self.thread_context_repeat == ThreadContextRepeat::FirstSeen {
-                Some(format!(
-                    "{} (reply with: >>{} <message>)",
-                    expanded_prefix, thread_token
-                ))
+        let inline_prefix =
+            if emit_expanded || self.thread_fallback_style == ThreadFallbackStyle::Verbose {
+                verbose_prefix
             } else {
-                Some(expanded_prefix)
-            }
-        } else if self.thread_fallback_style == ThreadFallbackStyle::Verbose {
-            Some(expanded_prefix)
-        } else {
-            Some(compact_prefix)
-        }
+                compact_prefix
+            };
+
+        Some(PlaintextThreadContext {
+            inline_prefix: Some(inline_prefix),
+            announcement_line: None,
+        })
     }
 
     fn mark_thread_token_seen(&self, channel: &str, token: &str) -> bool {
@@ -1007,7 +1064,11 @@ impl IRC {
                     .into_iter()
                     .take(THREAD_LIST_LIMIT)
                     .map(|(token, entry)| {
-                        format!("{} ({})", token, self.thread_root_summary(&entry.thread_ref))
+                        format!(
+                            "{} ({})",
+                            token,
+                            self.thread_root_summary(&entry.thread_ref)
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join(" | ")
@@ -1501,7 +1562,7 @@ impl Default for ThreadPresentation {
     fn default() -> Self {
         Self {
             reply_target: None,
-            plaintext_prefix: None,
+            plaintext_context: None,
             mode_used: "none",
         }
     }
