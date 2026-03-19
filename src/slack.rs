@@ -23,7 +23,7 @@ use tokio::{net::TcpStream, sync::broadcast};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt, StreamMap};
 use tokio_tungstenite::*;
 
-use crate::Message;
+use crate::{Message, ThreadRef};
 
 pub mod objects;
 use objects::{Message as SlackMessage, *};
@@ -44,7 +44,14 @@ pub(crate) struct Slack {
     channel_map: HashMap<String, String>,
     id_map: HashMap<String, String>,
     users: HashMap<String, User>,
+    thread_metadata_cache: HashMap<String, SlackThreadMetadata>,
     seen_event_ids: VecDeque<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SlackThreadMetadata {
+    root_author: Option<String>,
+    root_excerpt: Option<String>,
 }
 
 struct WebSocket {
@@ -93,6 +100,7 @@ impl Slack {
             channel_map: HashMap::new(),
             id_map: HashMap::new(),
             users: HashMap::new(),
+            thread_metadata_cache: HashMap::new(),
             seen_event_ids: VecDeque::with_capacity(50),
         })
     }
@@ -430,7 +438,7 @@ impl Slack {
         emoji: String,
         _username: Option<String>,
         _avatar_url: Option<String>,
-        _thread: Option<(Option<String>, Option<u64>)>,
+        _thread: Option<ThreadRef>,
     ) -> anyhow::Result<()> {
         let mut headers = HeaderMap::new();
         let channel = match self.channel_map.get(channel) {
@@ -619,13 +627,13 @@ impl Slack {
         transport: String,
         username: String,
         avatar_url: Option<String>,
-        thread: Option<(Option<String>, Option<u64>)>,
+        thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<crate::Attachment>>,
         is_edit: bool,
     ) -> anyhow::Result<()> {
         let thread_ts = match thread {
-            Some((s, _)) => s,
+            Some(thread_ref) => thread_ref.thread_root_id,
             None => None,
         };
         let message = message.map(|s| format!("_{}_", s));
@@ -803,15 +811,15 @@ impl Slack {
         transport: String,
         username: String,
         avatar_url: Option<String>,
-        thread: Option<(Option<String>, Option<u64>)>,
+        thread: Option<ThreadRef>,
         message: Option<String>,
         attachments: Option<Vec<crate::Attachment>>,
         is_edit: bool,
     ) -> anyhow::Result<()> {
         let thread_ts = match thread {
-            Some((_, d)) => match d {
-                Some(d) => self.get_slackid_from_discordid(d).await?,
-                None => None,
+            Some(thread_ref) => match thread_ref.reply_target_id {
+                Some(reply_target_id) => self.get_slackid_from_discordid(reply_target_id).await?,
+                None => thread_ref.thread_root_id,
             },
             None => None,
         };
@@ -923,7 +931,7 @@ impl Slack {
         emoji: String,
         _username: Option<String>,
         _avatar_url: Option<String>,
-        _thread: Option<(Option<String>, Option<u64>)>,
+        _thread: Option<ThreadRef>,
     ) -> anyhow::Result<()> {
         let mut headers = HeaderMap::new();
         let channel = match self.channel_map.get(channel) {
@@ -1355,16 +1363,7 @@ impl Slack {
                     None => false,
                 };
                 let channel = match channel {
-                    Some(channel) => match self.id_map.get(&channel) {
-                        Some(channel) => channel.to_owned(),
-                        None => {
-                            return Err(anyhow!(
-                                "Channel name not found \
-                            for channel id: {}",
-                                channel
-                            ))
-                        }
-                    },
+                    Some(channel) => channel,
                     None => {
                         return Err(anyhow!(
                             "Message does not contain a \
@@ -1372,6 +1371,7 @@ impl Slack {
                         ))
                     }
                 };
+                let (channel_name, channel_id) = self.resolve_channel_name_and_id(channel)?;
 
                 let rich_text = if let Some(blocks) = blocks {
                     let mut rich_text = String::new();
@@ -1408,7 +1408,8 @@ impl Slack {
                                 .handle_bot_message(
                                     ts,
                                     thread_ts,
-                                    &channel,
+                                    &channel_name,
+                                    &channel_id,
                                     rich_text,
                                     attachments,
                                     hidden,
@@ -1421,7 +1422,8 @@ impl Slack {
                                 .handle_file_share(
                                     ts,
                                     thread_ts,
-                                    &channel,
+                                    &channel_name,
+                                    &channel_id,
                                     user,
                                     rich_text,
                                     files,
@@ -1432,7 +1434,14 @@ impl Slack {
                         }
                         "me_message" => {
                             return self
-                                .handle_me_message(ts, &channel, user, rich_text, is_edit, irc_flag)
+                                .handle_me_message(
+                                    ts,
+                                    &channel_name,
+                                    user,
+                                    rich_text,
+                                    is_edit,
+                                    irc_flag,
+                                )
                                 .await
                         }
                         "message_changed" => {
@@ -1440,7 +1449,7 @@ impl Slack {
                                 .handle_message_changed(
                                     ts,
                                     thread_ts,
-                                    &channel,
+                                    &channel_name,
                                     message,
                                     prev_message,
                                     hidden,
@@ -1448,14 +1457,15 @@ impl Slack {
                                 .await
                         }
                         "message_deleted" => {
-                            return self.handle_message_deleted(deleted_ts, &channel).await
+                            return self.handle_message_deleted(deleted_ts, &channel_name).await
                         }
                         _ => {
                             return self
                                 .handle_message(
                                     ts,
                                     thread_ts,
-                                    &channel,
+                                    &channel_name,
+                                    &channel_id,
                                     user,
                                     rich_text,
                                     attachments,
@@ -1470,7 +1480,8 @@ impl Slack {
                             .handle_message(
                                 ts,
                                 thread_ts,
-                                &channel,
+                                &channel_name,
+                                &channel_id,
                                 user,
                                 rich_text,
                                 attachments,
@@ -1515,23 +1526,134 @@ impl Slack {
         }
     }
 
+    fn resolve_channel_name_and_id(&self, channel_id: String) -> anyhow::Result<(String, String)> {
+        let channel_name = match self.id_map.get(&channel_id) {
+            Some(channel_name) => channel_name.to_owned(),
+            None => {
+                return Err(anyhow!(
+                    "Channel name not found for channel id: {}",
+                    channel_id
+                ))
+            }
+        };
+
+        Ok((channel_name, channel_id))
+    }
+
+    fn build_thread_excerpt(message: Option<&str>) -> Option<String> {
+        let message = message?.trim();
+        if message.is_empty() {
+            return None;
+        }
+
+        let excerpt = message.chars().take(120).collect::<String>();
+        if message.chars().count() > 120 {
+            Some(format!("{}…", excerpt))
+        } else {
+            Some(excerpt)
+        }
+    }
+
+    fn get_username_from_cache(&self, user_id: &str) -> Option<String> {
+        self.users
+            .values()
+            .find(|user| user.id.as_deref() == Some(user_id))
+            .and_then(|user| Slack::get_username(user).ok())
+    }
+
+    async fn fetch_thread_root_metadata(
+        &mut self,
+        channel_id: &str,
+        thread_root_id: &str,
+    ) -> anyhow::Result<SlackThreadMetadata> {
+        let root_message = self
+            .get_message(channel_id, &Timestamp(thread_root_id.to_string()))
+            .await?;
+        let root_user = root_message.user.clone();
+        let root_text = root_message.text.clone();
+        let root_author = match root_user {
+            Some(user_id) => match self.get_username_from_cache(&user_id) {
+                Some(name) => Some(name),
+                None => {
+                    let user = self.get_user_info(&user_id).await?;
+                    Some(Slack::get_username(&user)?)
+                }
+            },
+            None => None,
+        };
+
+        Ok(SlackThreadMetadata {
+            root_author,
+            root_excerpt: Slack::build_thread_excerpt(root_text.as_deref()),
+        })
+    }
+
+    async fn build_slack_thread_ref(
+        &mut self,
+        thread_ts: Option<String>,
+        channel_id: &str,
+        message_ts: Option<&str>,
+        local_author: Option<&str>,
+        local_message: Option<&str>,
+    ) -> anyhow::Result<Option<ThreadRef>> {
+        let Some(thread_root_id) = thread_ts else {
+            return Ok(None);
+        };
+
+        match self.select_id_from_messages(&thread_root_id).await {
+            Some(_) => {}
+            None => {
+                self.insert_into_messages_table(&thread_root_id).await?;
+            }
+        }
+
+        let metadata = if message_ts == Some(thread_root_id.as_str()) {
+            SlackThreadMetadata {
+                root_author: local_author.map(String::from),
+                root_excerpt: Slack::build_thread_excerpt(local_message),
+            }
+        } else if let Some(metadata) = self.thread_metadata_cache.get(&thread_root_id) {
+            metadata.clone()
+        } else {
+            self.fetch_thread_root_metadata(channel_id, &thread_root_id)
+                .await?
+        };
+
+        self.thread_metadata_cache
+            .insert(thread_root_id.clone(), metadata.clone());
+
+        Ok(Some(ThreadRef {
+            origin_transport: TRANSPORT_NAME.to_string(),
+            reply_target_id: self
+                .select_discordid_from_messages(thread_root_id.clone())
+                .await?,
+            thread_root_id: Some(thread_root_id),
+            root_author: metadata.root_author,
+            root_excerpt: metadata.root_excerpt,
+            ..Default::default()
+        }))
+    }
+
     async fn handle_bot_message(
         &mut self,
         ts: Option<String>,
         thread_ts: Option<String>,
-        channel: &str,
+        channel_name: &str,
+        channel_id: &str,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
         _hidden: bool,
         is_edit: bool,
     ) -> anyhow::Result<()> {
-        let _thread = match thread_ts {
-            Some(ts) => Some((
-                Some(ts.clone()),
-                self.select_discordid_from_messages(ts).await?,
-            )),
-            None => None,
-        };
+        let _thread = self
+            .build_slack_thread_ref(
+                thread_ts,
+                channel_id,
+                ts.as_deref(),
+                None,
+                message.as_deref(),
+            )
+            .await?;
         let pipo_id = match ts {
             Some(ts) => match self.select_id_from_messages(&ts).await {
                 Some(id) => id,
@@ -1553,14 +1675,15 @@ impl Slack {
             is_edit,
         };
 
-        return self.send_message(channel, message).await;
+        return self.send_message(channel_name, message).await;
     }
 
     async fn handle_file_share(
         &mut self,
         ts: Option<String>,
         thread_ts: Option<String>,
-        channel: &str,
+        channel_name: &str,
+        channel_id: &str,
         user: Option<String>,
         message: Option<String>,
         files: Option<Vec<File>>,
@@ -1592,7 +1715,8 @@ impl Slack {
         self.handle_message(
             ts,
             thread_ts,
-            channel,
+            channel_name,
+            channel_id,
             user,
             message,
             attachments,
@@ -1931,7 +2055,8 @@ impl Slack {
         &mut self,
         ts: Option<String>,
         thread_ts: Option<String>,
-        channel: &str,
+        channel_name: &str,
+        channel_id: &str,
         user: Option<String>,
         message: Option<String>,
         attachments: Option<Vec<Attachment>>,
@@ -1940,10 +2065,6 @@ impl Slack {
     ) -> anyhow::Result<()> {
         let has_message = message.is_some();
         let has_attachments = attachments.is_some();
-        let thread = match thread_ts {
-            Some(ts) => Some((Some(ts.clone()), None)),
-            None => None,
-        };
         let ts = ts.ok_or_else(|| anyhow!("Message has no timestamp."))?;
         let pipo_id = match self.select_id_from_messages(&ts).await {
             Some(id) => id,
@@ -1959,6 +2080,15 @@ impl Slack {
             .get_user_info(&user.ok_or_else(|| anyhow!("No user ID in message."))?)
             .await?;
         let username = Slack::get_username(&user)?;
+        let thread = self
+            .build_slack_thread_ref(
+                thread_ts,
+                channel_id,
+                Some(ts.as_str()),
+                Some(username.as_str()),
+                message.as_deref(),
+            )
+            .await?;
         let avatar_url = Slack::get_avatar_url_for_user(&user)?;
         let attachments = match attachments {
             Some(attachments) => Some(self.handle_attachments(attachments).await),
@@ -1966,6 +2096,14 @@ impl Slack {
         };
 
         if has_message || has_attachments {
+            self.thread_metadata_cache.insert(
+                ts.clone(),
+                SlackThreadMetadata {
+                    root_author: Some(username.clone()),
+                    root_excerpt: Slack::build_thread_excerpt(message.as_deref()),
+                },
+            );
+
             let message = Message::Text {
                 pipo_id,
                 sender: self.transport_id,
@@ -1979,12 +2117,12 @@ impl Slack {
                 irc_flag,
             };
 
-            return self.send_message(channel, message).await;
+            return self.send_message(channel_name, message).await;
         } else {
             return Err(anyhow!(
                 "Message from {} on channel {} has no content",
                 username,
-                channel
+                channel_name
             ));
         }
     }
@@ -2175,6 +2313,11 @@ impl Slack {
         attachments: Vec<crate::Attachment>,
     ) -> Vec<Attachment> {
         let mut ret = Vec::new();
+        let channel_id = self
+            .channel_map
+            .get(channel)
+            .map(String::as_str)
+            .unwrap_or(channel);
 
         for attachment in attachments {
             let ts = match attachment.pipo_id {
@@ -2195,7 +2338,7 @@ impl Slack {
             // (*) blocks
             // (*) maybe subtype?
             let message = match ts {
-                Some(ref ts) => self.get_message(channel, ts).await.ok(),
+                Some(ref ts) => self.get_message(channel_id, ts).await.ok(),
                 None => None,
             };
 
@@ -2555,7 +2698,8 @@ impl Slack {
             format!("Bearer {}", self.bot_token).parse()?,
         );
 
-        let url = reqwest::Url::parse_with_params("https://slack.com/api/users.info", &[("user", user)])?;
+        let url =
+            reqwest::Url::parse_with_params("https://slack.com/api/users.info", &[("user", user)])?;
 
         let response = self
             .http
