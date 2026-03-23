@@ -1,0 +1,15 @@
+{
+    "name": "Codex Environment",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "features": {
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "24.14.0",
+            "installYarnUsingApt": true
+        },
+        "ghcr.io/dirien/devcontainer-feature-codex/codex:0": {
+            "version": "0.116.0"
+        }
+    }
+}
