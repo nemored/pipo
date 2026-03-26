@@ -28,6 +28,9 @@ jobs:
       - name: test
         run: cargo test --locked --verbose
 
+      - name: deterministic parity integration tests
+        run: cargo test --locked --test parity_integration --verbose
+
       - name: verify protobuf clean regeneration
         run: |
           # This runs against the checked-out commit for the PR.

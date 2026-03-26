@@ -3,9 +3,9 @@
 \#*\#
 .\#*
 *.sqlite3
-*.json
 .DS_Store
 .vagrant/
 .dev.env
 
+/config.json
 src/protos/
