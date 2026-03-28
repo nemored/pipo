@@ -1,0 +1,12 @@
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+deny = [
+    { name = "rustls-webpki", version = "<0.103.10" },
+]
