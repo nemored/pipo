@@ -1,0 +1,61 @@
+name: Integration
+
+on:
+  push:
+    branches:
+      - 'main'
+  pull_request:
+    branches:
+      - 'main'
+      - 'feature/**'
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Always-on integration tests: the in-process startup suite plus a fully
+  # credential-free IRC bridging test against a bare ircd service container.
+  # Runs on every PR, including forks (no secrets required).
+  startup-and-irc:
+    runs-on: ubuntu-latest
+    services:
+      # Bare standalone ircd on plaintext 6667, no auth. Service containers
+      # cannot mount repo config (the repo isn't checked out when they start),
+      # so a working-by-default image is required.
+      ircd:
+        image: inspircd/inspircd-docker
+        ports:
+          - 6667:6667
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: install_deps
+        run: sudo apt install -y protobuf-compiler libsqlite3-dev libssl-dev
+
+      - name: Integration tests (startup + IRC bridge)
+        env:
+          PIPO_IT_IRC_SERVER: 127.0.0.1:6667
+        run: cargo test --locked --verbose --test startup --test irc_bridge
+
+  # Live-service connect/startup smoke tests against real Discord and Slack.
+  # The tests self-skip when their secrets are absent, so this job passes on
+  # fork PRs and only actually exercises the services when the repo owner has
+  # provisioned the secrets below.
+  live-service-smoke:
+    runs-on: ubuntu-latest
+    env:
+      PIPO_IT_DISCORD_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+      PIPO_IT_DISCORD_GUILD_ID: ${{ secrets.DISCORD_GUILD_ID }}
+      PIPO_IT_DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+      PIPO_IT_SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_LEVEL_TOKEN }}
+      PIPO_IT_SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      PIPO_IT_SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: install_deps
+        run: sudo apt install -y protobuf-compiler libsqlite3-dev libssl-dev
+
+      - name: Live-service smoke tests (self-skip without secrets)
+        run: cargo test --locked --verbose --test discord_smoke --test slack_smoke
