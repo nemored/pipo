@@ -1,0 +1,13 @@
+[Unit]
+Description=Network namespace + veth pair for pipo (%i)
+Before=pipo@%i.service
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/pipo/deploy/scripts/netns-setup.sh up %i
+ExecStop=/opt/pipo/deploy/scripts/netns-setup.sh down %i
+
+[Install]
+WantedBy=multi-user.target

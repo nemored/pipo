@@ -1,0 +1,24 @@
+[Unit]
+Description=pipo chat relay (%i)
+Requires=pipo-netns-setup@%i.service
+After=pipo-netns-setup@%i.service network-online.target
+PartOf=pipo-netns-setup@%i.service
+
+[Service]
+Type=simple
+NetworkNamespacePath=/run/netns/pipo-%i
+
+DynamicUser=yes
+StateDirectory=pipo/%i
+EnvironmentFile=/etc/pipo/%i.env
+ExecStart=/usr/local/bin/pipo
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
