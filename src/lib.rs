@@ -14,6 +14,7 @@ use tokio::{fs::File, io::AsyncReadExt, sync::broadcast};
 
 mod discord;
 mod irc;
+mod matrix;
 mod mumble;
 pub(crate) mod protos;
 mod rachni;
@@ -21,6 +22,7 @@ pub mod slack;
 
 use crate::discord::Discord;
 use crate::irc::{IRC, ThreadContextRepeat, ThreadFallbackStyle, ThreadPresentationMode};
+use crate::matrix::Matrix;
 use crate::mumble::Mumble;
 use crate::rachni::Rachni;
 use crate::slack::Slack;
@@ -255,6 +257,34 @@ enum ConfigTransport {
         interval: u64,
         buses: Arc<Vec<String>>,
     },
+    Matrix {
+        // Host (or host:port) of the homeserver's client-server API, e.g.
+        // "matrix.example.org". The scheme is derived from use_tls; it is not
+        // written here because the config parser strips "//" as a comment.
+        homeserver: Arc<String>,
+        // Whether to reach the homeserver over HTTPS.
+        use_tls: bool,
+        // The homeserver's domain, i.e. the ":server_name" half of user
+        // and room IDs, e.g. "example.org".
+        server_name: Arc<String>,
+        // Appservice -> homeserver token (used as the access_token when
+        // PIPO calls the client-server API).
+        as_token: Arc<String>,
+        // Homeserver -> appservice token (used to authenticate the
+        // inbound transaction pushes from the homeserver).
+        hs_token: Arc<String>,
+        // Localpart of the appservice's own user, matching the
+        // registration's "sender_localpart", e.g. "pipo".
+        sender_localpart: Arc<String>,
+        // Localpart prefix for ghost (puppet) users, matching the prefix
+        // of the registration's users namespace regex, e.g. "pipo_".
+        ghost_prefix: Arc<String>,
+        // Address the inbound appservice HTTP listener binds to, e.g.
+        // "0.0.0.0:8090".
+        listen_addr: Arc<String>,
+        // Matrix room ID -> bus id.
+        channel_mapping: HashMap<Arc<String>, Arc<String>>,
+    },
 }
 
 #[derive(Deserialize, Debug)]
@@ -314,7 +344,8 @@ pub async fn inner_main() -> anyhow::Result<()> {
                                            slackid   TEXT,
                                            discordid INTEGER,
                                            ircid     TEXT,
-                                           modtime   DEFAULT 
+                                           matrixid  TEXT,
+                                           modtime   DEFAULT
                                              (strftime('%Y-%m-%d %H:%M:%S:%s',
                                                        'now', 
                                                        'localtime'))
@@ -340,6 +371,15 @@ pub async fn inner_main() -> anyhow::Result<()> {
                     .any(|column| column == "ircid");
                 if !ircid_exists {
                     conn.execute("ALTER TABLE messages ADD COLUMN ircid TEXT", [])?;
+                }
+
+                let matrixid_exists = conn
+                    .prepare("PRAGMA table_info(messages)")?
+                    .query_map([], |row| row.get::<usize, String>(1))?
+                    .filter_map(Result::ok)
+                    .any(|column| column == "matrixid");
+                if !matrixid_exists {
+                    conn.execute("ALTER TABLE messages ADD COLUMN matrixid TEXT", [])?;
                 }
 
                 Ok(
@@ -579,6 +619,43 @@ pub async fn inner_main() -> anyhow::Result<()> {
                        {:#}",
                                 e
                             );
+                        }
+                    }
+                });
+                all_transport_tasks.push(handle);
+            }
+            ConfigTransport::Matrix {
+                homeserver,
+                use_tls,
+                server_name,
+                as_token,
+                hs_token,
+                sender_localpart,
+                ghost_prefix,
+                listen_addr,
+                channel_mapping,
+            } => {
+                let mut instance = Matrix::new(
+                    transport_id,
+                    &bus_map,
+                    pipo_id.clone(),
+                    db_pool.clone(),
+                    homeserver.to_string(),
+                    *use_tls,
+                    server_name.to_string(),
+                    as_token.to_string(),
+                    hs_token.to_string(),
+                    sender_localpart.to_string(),
+                    ghost_prefix.to_string(),
+                    listen_addr.to_string(),
+                    &channel_mapping,
+                )
+                .await?;
+                let handle = tokio::spawn(async move {
+                    match instance.connect().await {
+                        Ok(_) => eprintln!("Matrix::connect() exited Ok"),
+                        Err(e) => {
+                            eprintln!("Matrix::connect() exited with Error: {:#}", e);
                         }
                     }
                 });
