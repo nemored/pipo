@@ -1,0 +1,15 @@
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+ignore = [
+    "RUSTSEC-2021-0153", # transitive via `irc` -> `encoding`; no maintained alternative in that dependency path yet
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+deny = [
+    { name = "rustls-webpki", version = "<0.103.10" },
+]

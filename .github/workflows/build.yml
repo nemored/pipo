@@ -28,6 +28,12 @@ jobs:
       - name: test
         run: cargo test --locked --verbose
 
+      - name: install cargo-deny
+        run: cargo install --locked cargo-deny
+
+      - name: guard rustls-webpki floor
+        run: cargo deny check advisories bans --hide-inclusion-graph
+
       - name: verify protobuf clean regeneration
         run: |
           # This runs against the checked-out commit for the PR.
