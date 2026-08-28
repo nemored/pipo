@@ -1,0 +1,38 @@
+---
+- name: populate parameters
+  set_fact:
+    params: "{{ hostvars[inventory_hostname].swap | default({ 'path': '/swapfile', 'size_gb': '1'}) }}"
+
+## todo check free instead of file path
+- name: stat swap
+  ansible.builtin.stat:
+    path: "{{ params.path }}"
+  register: swap
+
+- name: create swapfile
+  ansible.builtin.shell:
+    cmd: "dd if=/dev/zero of={{ params.path }} bs=1M count={{ params.size_gb }}k status=progress"
+  when: not swap.stat.exists
+
+- name: chmod swapfile
+  ansible.builtin.shell:
+    cmd: "chmod 0600 {{ params.path }}"
+  when: not swap.stat.exists
+
+- name: make swap
+  ansible.builtin.shell:
+    cmd: "mkswap -U clear {{ params.path }}"
+  when: not swap.stat.exists
+
+- name: enable swap
+  ansible.builtin.shell:
+    cmd: "swapon {{ params.path }}"
+  when: not swap.stat.exists
+
+- name: add swap to fstab
+  ansible.builtin.blockinfile:
+    path: /etc/fstab
+    marker: "# {mark} swap {{ inventory_hostname }}"
+    block: |
+      {{ params.path }} none swap defaults 0 0
+  when: not swap.stat.exists
