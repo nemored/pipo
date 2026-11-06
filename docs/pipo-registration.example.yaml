@@ -1,0 +1,21 @@
+# Example Matrix appservice registration for PIPO.
+#
+# Register this with your homeserver (on Synapse, list it under
+# `app_service_config_files` in homeserver.yaml) and copy `as_token` /
+# `hs_token` into PIPO's Matrix transport config. See docs/matrix-transport.md.
+#
+# Replace the two tokens with long random strings and make them different from
+# each other.
+id: pipo
+url: "http://127.0.0.1:8090" # must match the transport's listen_addr and be reachable by the homeserver
+as_token: "REPLACE_WITH_A_LONG_RANDOM_STRING"
+hs_token: "REPLACE_WITH_A_DIFFERENT_LONG_RANDOM_STRING"
+sender_localpart: "pipo"
+rate_limited: false
+namespaces:
+  users:
+    # A single exclusive namespace spanning every service PIPO bridges.
+    - exclusive: true
+      regex: "@pipo_.*"
+  aliases: []
+  rooms: []
